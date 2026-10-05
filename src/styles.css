@@ -132,6 +132,17 @@ h1 { margin: 11px 0 7px; color: var(--green-dark); font-family: Georgia, "Times 
 .panel-bar strong { color: #26392e; font-size: 12px; font-weight: 600; }
 .panel-kicker { color: #728178; font-size: 9px; font-weight: 700; letter-spacing: 1.1px; }
 .page-label { color: #849087; font-size: 11px; }
+.document-searchbar { min-height: 48px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid #e4eae4; background: #fff; }
+.document-search-field { min-width: 0; height: 34px; flex: 1 1 auto; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid #d9e2da; border-radius: 5px; color: #78857c; }
+.document-search-field:focus-within { border-color: #7fa98a; box-shadow: 0 0 0 2px rgba(77, 149, 103, .12); }
+.document-search-field > span { color: var(--green); font-size: 17px; line-height: 1; }
+.document-search-field input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; }
+.document-search-field input::placeholder { color: #89958c; }
+.search-match-count { min-width: 38px; color: #728078; font-size: 10px; text-align: right; white-space: nowrap; }
+.search-navigation { display: flex; gap: 2px; }
+.search-navigation button { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #42544a; font-size: 16px; cursor: pointer; }
+.search-navigation button:hover:not(:disabled) { background: #edf5ed; }
+.search-navigation button:disabled { color: #b0b9b2; cursor: default; }
 .pdf-page { width: 100%; height: clamp(430px, 65vh, 735px); display: flex; justify-content: center; overflow: auto; padding: 18px; background: #e9ece9; }
 .answer-page { height: clamp(380px, 55vh, 620px); }
 .answer-page-stack { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 18px; }
@@ -147,6 +158,8 @@ h1 { margin: 11px 0 7px; color: var(--green-dark); font-family: Georgia, "Times 
 .exam-page-label { margin-bottom: 7px; color: #78857c; font-size: 10px; font-weight: 600; }
 .exam-paper { position: relative; display: grid; width: 100%; aspect-ratio: 595 / 842; place-items: center; overflow: hidden; background: #fff; box-shadow: 0 2px 10px rgba(27, 42, 35, .12); }
 .exam-page-placeholder { color: #78857c; font-size: 12px; }
+.exam-search-highlight { position: absolute; z-index: 2; border: 1px solid rgba(181, 119, 19, .55); border-radius: 2px; background: rgba(250, 202, 72, .42); pointer-events: none; }
+.exam-search-highlight.is-current { z-index: 3; border: 2px solid #b77513; background: rgba(255, 190, 52, .58); }
 .panel-actions { position: static; min-height: 64px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-top: 1px solid #e4eae4; background: rgba(255, 255, 255, .97); }
 .answer-button { min-height: 38px; padding: 0 15px; border: 1px solid var(--green); border-radius: 5px; background: var(--green); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
 .answer-button:hover { background: var(--green-dark); }
@@ -210,6 +223,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid #e6aa49; outline-offs
 	.panel-bar { min-height: 49px; padding: 0 12px; }
 	.panel-bar > div { gap: 9px; }
 	.panel-kicker { font-size: 8px; }
+	.document-searchbar { min-height: 45px; gap: 6px; padding: 5px 8px; }
+	.document-search-field { height: 33px; gap: 5px; padding: 0 7px; }
+	.search-match-count { min-width: 32px; font-size: 9px; }
+	.search-navigation button { width: 29px; height: 30px; }
 	.pdf-page { height: 60vh; min-height: 390px; padding: 10px; }
 	.answer-page { height: 52vh; min-height: 340px; }
 	.panel-actions { align-items: flex-start; flex-direction: column; padding: 12px; }

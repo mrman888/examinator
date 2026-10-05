@@ -6,7 +6,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 const dataDirectory = path.resolve('Data');
 const sourceDirectory = path.join(dataDirectory, 'source');
 const processedDirectory = path.join(dataDirectory, 'processed');
-const examCodePattern = /HA-1018-a-\d{2}-\d-[oc]/;
+const examCodePattern = /(?:HA-1018-a-\d{2}-\d-[oc]|947-1018-a-HA-\d-[oc])/;
 
 await fs.mkdir(sourceDirectory, { recursive: true });
 await fs.mkdir(processedDirectory, { recursive: true });
@@ -74,3 +74,5 @@ await extractVerifiedBundlePages('Examenbundel_Compleet_HAVO_Biologie.pdf', 164,
 await copyVerifiedSource('2024_tijdvlak1_examen.pdf', '2024_havo_tijdvak1_examen.pdf', 'HA-1018-a-24-1-o');
 await copyVerifiedSource('2024_tijdvlak1_antwoorden.pdf', '2024_havo_tijdvak1_antwoorden.pdf', 'HA-1018-a-24-1-c');
 await copyVerifiedSource('2025_tijdvlak2_antwoorden.pdf', '2025_havo_tijdvak2_antwoorden.pdf', 'HA-1018-a-25-2-c');
+await copyVerifiedSource('2009_tijdvlak2_examen.pdf', '2009_havo_tijdvak2_examen.pdf', '947-1018-a-HA-2-o');
+await copyVerifiedSource('2009_tijdvlak2_antwoorden.pdf', '2009_havo_tijdvak2_antwoorden.pdf', '947-1018-a-HA-2-c');

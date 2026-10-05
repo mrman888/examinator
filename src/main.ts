@@ -27,6 +27,15 @@ interface ExamYearGroup {
   timevakken: ExamTimevakGroup[];
 }
 
+interface DocumentSearchMatch {
+  id: string;
+  pageNumber: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 const topics = [
   { id: '2.1', title: 'Menselijke en dierlijke cellen' },
   { id: '2.2', title: 'DNA en specialisatie van cellen' },
@@ -110,6 +119,40 @@ const questions: ExamQuestion[] = [
   { id: 'h24-t1-q43', topics: ['2.5'], title: 'Osmose bij een verzilte bodem', examFile: '2024_havo_tijdvak1_examen.pdf', examPage: 20, answerFile: '2024_havo_tijdvak1_antwoorden.pdf', answerPage: 11, year: 2024, timevak: 1, number: 43 },
   { id: 'h24-t1-q44', topics: ['2.1', '2.5'], title: 'Zoutopslag in plantencellen', examFile: '2024_havo_tijdvak1_examen.pdf', examPage: 20, answerFile: '2024_havo_tijdvak1_antwoorden.pdf', answerPage: 11, year: 2024, timevak: 1, number: 44 },
   { id: 'h24-t1-q45', topics: ['2.5'], title: 'Melkzuurbacteriën en fermentatie', examFile: '2024_havo_tijdvak1_examen.pdf', examPage: 20, answerFile: '2024_havo_tijdvak1_antwoorden.pdf', answerPage: 11, year: 2024, timevak: 1, number: 45 },
+  { id: 'h09-t2-q1', topics: ['2.5'], title: 'Stikstofkringloop in de Maarsseveense Plassen', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 3, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 4, year: 2009, timevak: 2, number: 1 },
+  { id: 'h09-t2-q2', topics: ['2.5'], title: 'Algen onder de microscoop', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 3, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 4, year: 2009, timevak: 2, number: 2 },
+  { id: 'h09-t2-q3', topics: ['2.5'], title: 'Algen en schimmelsporen', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 3, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 4, year: 2009, timevak: 2, number: 3 },
+  { id: 'h09-t2-q4', topics: ['2.1'], title: 'Besmetting met malaria', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 4, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 4, year: 2009, timevak: 2, number: 4 },
+  { id: 'h09-t2-q5', topics: ['2.1'], title: 'Rode bloedcellen bij malaria', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 5, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 4, year: 2009, timevak: 2, number: 5 },
+  { id: 'h09-t2-q6', topics: ['2.2'], title: 'Insecticideresistentie bij muggen', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 5, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 6 },
+  { id: 'h09-t2-q7', topics: ['2.2'], title: 'Chromosomen in een spermacel', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 5, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 7 },
+  { id: 'h09-t2-q8', topics: ['2.2'], title: 'Overerving van varkensoren', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 7, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 8 },
+  { id: 'h09-t2-q9', topics: ['2.2'], title: 'Genotypen bij varkens', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 7, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 9 },
+  { id: 'h09-t2-q10', topics: ['2.2'], title: 'Kruisingsresultaten bij varkens', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 8, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 10 },
+  { id: 'h09-t2-q11', topics: ['2.2'], title: 'DNA-test voor fokvarkens', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 8, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 11 },
+  { id: 'h09-t2-q12', topics: ['2.5'], title: 'Verteringsproducten van lactose door bacteriën', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 9, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 12 },
+  { id: 'h09-t2-q13', topics: ['2.5'], title: 'Dissimilatie door darmbacteriën', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 9, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 13 },
+  { id: 'h09-t2-q14', topics: ['2.1'], title: 'Waterstof in het bloed', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 9, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 5, year: 2009, timevak: 2, number: 14 },
+  { id: 'h09-t2-q15', topics: ['2.1'], title: 'Waterstof in uitgeademde lucht', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 10, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 6, year: 2009, timevak: 2, number: 15 },
+  { id: 'h09-t2-q16', topics: ['2.1'], title: 'Lactose-intolerantie meten', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 10, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 6, year: 2009, timevak: 2, number: 16 },
+  { id: 'h09-t2-q17', topics: ['2.1'], title: 'Glucoseconcentratie in bloed', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 11, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 6, year: 2009, timevak: 2, number: 17 },
+  { id: 'h09-t2-q18', topics: ['2.2'], title: 'Genotype voor lactose-intolerantie', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 11, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 6, year: 2009, timevak: 2, number: 18 },
+  { id: 'h09-t2-q20', topics: ['2.5'], title: 'Zuurstof onder het wateroppervlak', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 12, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 6, year: 2009, timevak: 2, number: 20 },
+  { id: 'h09-t2-q22', topics: ['2.1'], title: 'Osmoregulatie bij vlokreeften', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 13, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 6, year: 2009, timevak: 2, number: 22 },
+  { id: 'h09-t2-q23', topics: ['2.1'], title: 'Glycogeen in levercellen', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 14, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 23 },
+  { id: 'h09-t2-q24', topics: ['2.1'], title: 'Uitscheidingsorganen', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 15, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 24 },
+  { id: 'h09-t2-q25', topics: ['2.1'], title: 'Opname van aminozuren door darmvlokken', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 15, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 25 },
+  { id: 'h09-t2-q26', topics: ['2.1'], title: 'Bloedvaten van de lever', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 15, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 26 },
+  { id: 'h09-t2-q27', topics: ['2.1'], title: 'Hormoonregeling van bloedglucose', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 15, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 27 },
+  { id: 'h09-t2-q28', topics: ['2.2'], title: 'Mutatie in erfelijk materiaal', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 16, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 28 },
+  { id: 'h09-t2-q29', topics: ['2.2'], title: 'Voorwaarde voor soortvorming', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 16, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 7, year: 2009, timevak: 2, number: 29 },
+  { id: 'h09-t2-q33', topics: ['2.1'], title: 'Eiwitproductie in cellen', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 19, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 33 },
+  { id: 'h09-t2-q35', topics: ['2.5'], title: 'Clostridium botulinum', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 20, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 35 },
+  { id: 'h09-t2-q36', topics: ['2.1'], title: 'Botuline en impulsoverdracht', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 21, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 36 },
+  { id: 'h09-t2-q37', topics: ['2.1'], title: 'Botuline en scherp zien', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 21, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 37 },
+  { id: 'h09-t2-q38', topics: ['2.2', '2.5'], title: 'Genlocatie in een bacterie', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 21, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 38 },
+  { id: 'h09-t2-q39', topics: ['2.1'], title: 'Botox en oogspieren', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 22, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 39 },
+  { id: 'h09-t2-q40', topics: ['2.1'], title: 'Botox en gezichtsspieren', examFile: '2009_havo_tijdvak2_examen.pdf', examPage: 22, answerFile: '2009_havo_tijdvak2_antwoorden.pdf', answerPage: 8, year: 2009, timevak: 2, number: 40 },
 ];
 
 @Component({
@@ -212,6 +255,25 @@ const questions: ExamQuestion[] = [
                 <div><span class="panel-kicker">EXAMENVRAAG</span><strong>Vraag {{ question.number }}</strong></div>
                 <span class="page-label">Pagina {{ question.examPage }}</span>
               </div>
+              <div class="document-searchbar" role="search" aria-label="Zoeken in examendocument">
+                <label class="document-search-field">
+                  <span aria-hidden="true">⌕</span>
+                  <input type="search" aria-label="Zoektekst in examendocument" placeholder="Zoek in dit document" [value]="searchQuery" (input)="updateSearchQuery($any($event.target).value)" (keydown.enter)="moveSearchMatch(1)" />
+                </label>
+                <span class="search-match-count" aria-live="polite">
+                  @if (searching) {
+                    Zoeken…
+                  } @else if (searchError) {
+                    {{ searchError }}
+                  } @else if (searchQuery.trim()) {
+                    {{ searchMatches.length ? activeSearchMatchIndex + 1 : 0 }} / {{ searchMatches.length }}
+                  }
+                </span>
+                <div class="search-navigation">
+                  <button type="button" aria-label="Vorige zoekresultaat" title="Vorige zoekresultaat" [disabled]="searching || searchMatches.length === 0" (click)="moveSearchMatch(-1)">←</button>
+                  <button type="button" aria-label="Volgende zoekresultaat" title="Volgende zoekresultaat" [disabled]="searching || searchMatches.length === 0" (click)="moveSearchMatch(1)">→</button>
+                </div>
+              </div>
               @if (examError) {
                 <p class="pdf-message pdf-error">{{ examError }}</p>
               } @else if (examLoading && examPageNumbers.length === 0) {
@@ -229,6 +291,9 @@ const questions: ExamQuestion[] = [
                         <span class="exam-page-placeholder">Pagina laden…</span>
                       }
                       <canvas #examPageCanvas class="pdf-canvas" [attr.data-page]="page" [class.is-hidden]="!renderedExamPages.has(page)" [attr.aria-label]="'Examenpagina ' + page"></canvas>
+                      @for (match of searchMatchesForPage(page); track match.id) {
+                        <span class="exam-search-highlight" [class.is-current]="activeSearchMatchId === match.id" [style.left.px]="match.left" [style.top.px]="match.top" [style.width.px]="match.width" [style.height.px]="match.height" aria-hidden="true"></span>
+                      }
                     </div>
                   </section>
                 }
@@ -304,6 +369,13 @@ class AppComponent implements AfterViewInit, OnDestroy {
   readonly questions = questions;
   activeTopic = topics[0].id;
   examOverviewOpen = false;
+  searchQuery = '';
+  searchMatches: DocumentSearchMatch[] = [];
+  searchMatchesByPage = new Map<number, DocumentSearchMatch[]>();
+  activeSearchMatchIndex = -1;
+  activeSearchMatchId = '';
+  searching = false;
+  searchError = '';
   questionIndex = 0;
   showAnswer = false;
   examLoading = true;
@@ -318,6 +390,8 @@ class AppComponent implements AfterViewInit, OnDestroy {
   private doneIds = this.readDoneIds();
   private currentExamFile = '';
   private examRenderVersion = 0;
+  private searchVersion = 0;
+  private searchTimer?: number;
   private examObserver?: IntersectionObserver;
   private renderingExamPages = new Set<string>();
   private documents = new Map<string, Promise<PDFDocumentProxy>>();
@@ -330,6 +404,7 @@ class AppComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.examObserver?.disconnect();
+    if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
     this.cancelRenderTasks();
   }
 
@@ -377,6 +452,42 @@ class AppComponent implements AfterViewInit, OnDestroy {
 
   countFor(topicId: string): number {
     return this.questions.filter((question) => question.topics.includes(topicId)).length;
+  }
+
+  searchMatchesForPage(pageNumber: number): DocumentSearchMatch[] {
+    return this.searchMatchesByPage.get(pageNumber) ?? [];
+  }
+
+  updateSearchQuery(query: string): void {
+    this.searchQuery = query;
+    this.searchVersion++;
+    if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
+    this.searchMatches = [];
+    this.searchMatchesByPage = new Map();
+    this.activeSearchMatchIndex = -1;
+    this.activeSearchMatchId = '';
+    this.searchError = '';
+
+    const trimmedQuery = query.trim();
+    this.searching = Boolean(trimmedQuery);
+    if (!trimmedQuery) return;
+
+    const version = this.searchVersion;
+    this.searchTimer = window.setTimeout(() => {
+      this.searchTimer = undefined;
+      void this.findDocumentMatches(trimmedQuery, version);
+    }, 220);
+  }
+
+  moveSearchMatch(direction: number): void {
+    if (!this.searchMatches.length) return;
+    const nextIndex = (this.activeSearchMatchIndex + direction + this.searchMatches.length) % this.searchMatches.length;
+    const match = this.searchMatches[nextIndex];
+    this.activeSearchMatchIndex = nextIndex;
+    this.activeSearchMatchId = match.id;
+    this.scrollToExamPage(match.pageNumber);
+    this.renderExamPage(match.pageNumber);
+    this.changeDetector.detectChanges();
   }
 
   isDone(questionId: string): boolean {
@@ -455,6 +566,15 @@ class AppComponent implements AfterViewInit, OnDestroy {
     this.examObserver?.disconnect();
     this.cancelRenderTasks();
     this.currentExamFile = question.examFile;
+    this.searchVersion++;
+    if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
+    this.searchTimer = undefined;
+    this.searchMatches = [];
+    this.searchMatchesByPage = new Map();
+    this.activeSearchMatchIndex = -1;
+    this.activeSearchMatchId = '';
+    this.searching = false;
+    this.searchError = '';
     this.examPageNumbers = [];
     this.renderedExamPages = new Set();
     this.examPageErrors = new Map();
@@ -474,6 +594,7 @@ class AppComponent implements AfterViewInit, OnDestroy {
       this.observeExamPages(question.examFile, renderVersion);
       this.scrollToExamPage(question.examPage);
       this.renderExamPage(question.examPage);
+      if (this.searchQuery.trim()) this.updateSearchQuery(this.searchQuery);
     } catch {
       if (renderVersion !== this.examRenderVersion) return;
       this.examLoading = false;
@@ -518,6 +639,73 @@ class AppComponent implements AfterViewInit, OnDestroy {
     if (!container || !page) return;
     const top = page.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
     container.scrollTo({ top, behavior: 'smooth' });
+  }
+
+  private async findDocumentMatches(query: string, version: number): Promise<void> {
+    const file = this.currentExamFile;
+    if (!file) {
+      this.searching = false;
+      return;
+    }
+
+    try {
+      const document = await this.loadDocument(file);
+      const normalizedQuery = query.toLocaleLowerCase();
+      const matches: DocumentSearchMatch[] = [];
+      const matchesByPage = new Map<number, DocumentSearchMatch[]>();
+
+      for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+        if (version !== this.searchVersion || file !== this.currentExamFile) return;
+
+        const page = await document.getPage(pageNumber);
+        const content = await page.getTextContent();
+        const baseViewport = page.getViewport({ scale: 1 });
+        const canvas = this.examCanvases.find((item) => Number(item.nativeElement.dataset.page) === pageNumber)?.nativeElement;
+        const availableWidth = canvas?.parentElement?.clientWidth ?? baseViewport.width;
+        const scale = Math.min(availableWidth / baseViewport.width, 1.4);
+        const viewport = page.getViewport({ scale });
+        const pageMatches: DocumentSearchMatch[] = [];
+
+        for (let itemIndex = 0; itemIndex < content.items.length; itemIndex++) {
+          const item = content.items[itemIndex];
+          if (!('str' in item) || !item.str) continue;
+
+          const text = item.str.toLocaleLowerCase();
+          const itemWidth = item.width * scale;
+          const itemHeight = Math.max(item.height * scale, 8);
+          const [baselineX, baselineY] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+          let start = text.indexOf(normalizedQuery);
+          while (start !== -1) {
+            const matchWidth = Math.max(itemWidth * normalizedQuery.length / item.str.length, 5);
+            const match = {
+              id: `${pageNumber}-${itemIndex}-${start}`,
+              pageNumber,
+              left: baselineX + itemWidth * start / item.str.length,
+              top: baselineY - itemHeight,
+              width: matchWidth,
+              height: itemHeight,
+            };
+            matches.push(match);
+            pageMatches.push(match);
+            start = text.indexOf(normalizedQuery, start + normalizedQuery.length);
+          }
+        }
+
+        if (pageMatches.length) matchesByPage.set(pageNumber, pageMatches);
+      }
+
+      if (version !== this.searchVersion || file !== this.currentExamFile) return;
+      this.searchMatches = matches;
+      this.searchMatchesByPage = matchesByPage;
+      this.searching = false;
+      this.changeDetector.detectChanges();
+      if (matches.length) this.moveSearchMatch(1);
+    } catch {
+      if (version !== this.searchVersion) return;
+      this.searching = false;
+      this.searchError = 'Zoeken is mislukt.';
+      this.changeDetector.detectChanges();
+    }
   }
 
   private renderAnswerPage(): void {
