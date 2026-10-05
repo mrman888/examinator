@@ -17,6 +17,16 @@ interface ExamQuestion {
   number: number;
 }
 
+interface ExamTimevakGroup {
+  timevak: number;
+  questions: ExamQuestion[];
+}
+
+interface ExamYearGroup {
+  year: number;
+  timevakken: ExamTimevakGroup[];
+}
+
 const topics = [
   { id: '2.1', title: 'Menselijke en dierlijke cellen' },
   { id: '2.2', title: 'DNA en specialisatie van cellen' },
@@ -111,7 +121,40 @@ const questions: ExamQuestion[] = [
           <span class="brand-mark">E</span>
           <span><strong>Examinator</strong><small>Biologie · HAVO</small></span>
         </a>
-        <div class="topbar-status"><span class="status-dot"></span> Examenjaren 2023-2025</div>
+        <div class="exam-overview" (click)="$event.stopPropagation()">
+          <button class="topbar-status" type="button" [attr.aria-label]="'Examenjaren en vragen: ' + examYears.join(', ')" [attr.aria-expanded]="examOverviewOpen" aria-controls="exam-overview-panel" (click)="examOverviewOpen = !examOverviewOpen">
+            <span class="status-dot"></span>
+            <span>Examenjaren</span>
+            <span class="overview-years">{{ examYears.join(' · ') }}</span>
+            <span class="overview-chevron" aria-hidden="true">⌄</span>
+          </button>
+          @if (examOverviewOpen) {
+            <section class="exam-overview-panel" id="exam-overview-panel" aria-label="Beschikbare examenjaren, tijdvakken en vragen">
+              <div class="overview-panel-heading">
+                <strong>Beschikbare examens</strong>
+                <span>{{ questions.length }} vragen</span>
+              </div>
+              @for (yearGroup of examOverview; track yearGroup.year) {
+                <section class="overview-year">
+                  <h2>HAVO {{ yearGroup.year }}</h2>
+                  @for (timevakGroup of yearGroup.timevakken; track timevakGroup.timevak) {
+                    <div class="overview-timevak">
+                      <h3>Tijdvak {{ timevakGroup.timevak }} <span>{{ timevakGroup.questions.length }} vragen</span></h3>
+                      <div class="overview-questions">
+                        @for (question of timevakGroup.questions; track question.id) {
+                          <button type="button" class="overview-question" [class.current]="selectedQuestion?.id === question.id" [attr.aria-label]="'Vraag ' + question.number + ': ' + question.title" (click)="selectExamOverviewQuestion(question)">
+                            <span>{{ question.number }}</span>
+                            <strong>{{ question.title }}</strong>
+                          </button>
+                        }
+                      </div>
+                    </div>
+                  }
+                </section>
+              }
+            </section>
+          }
+        </div>
       </header>
 
       <div class="workspace">
@@ -260,6 +303,7 @@ class AppComponent implements AfterViewInit, OnDestroy {
   readonly topics = topics;
   readonly questions = questions;
   activeTopic = topics[0].id;
+  examOverviewOpen = false;
   questionIndex = 0;
   showAnswer = false;
   examLoading = true;
@@ -291,6 +335,24 @@ class AppComponent implements AfterViewInit, OnDestroy {
 
   get filteredQuestions(): ExamQuestion[] {
     return this.questions.filter((question) => question.topics.includes(this.activeTopic));
+  }
+
+  get examYears(): number[] {
+    return [...new Set(this.questions.map((question) => question.year))].sort((a, b) => b - a);
+  }
+
+  get examOverview(): ExamYearGroup[] {
+    return this.examYears.map((year) => ({
+      year,
+      timevakken: [...new Set(this.questions.filter((question) => question.year === year).map((question) => question.timevak))]
+        .sort((a, b) => a - b)
+        .map((timevak) => ({
+          timevak,
+          questions: this.questions
+            .filter((question) => question.year === year && question.timevak === timevak)
+            .sort((a, b) => a.number - b.number),
+        })),
+    }));
   }
 
   get selectedQuestion(): ExamQuestion | undefined {
@@ -334,6 +396,14 @@ class AppComponent implements AfterViewInit, OnDestroy {
     void this.renderExamDocument();
   }
 
+  selectExamOverviewQuestion(question: ExamQuestion): void {
+    this.activeTopic = question.topics[0] ?? this.activeTopic;
+    this.questionIndex = this.filteredQuestions.findIndex((item) => item.id === question.id);
+    this.examOverviewOpen = false;
+    this.showAnswer = false;
+    void this.renderExamDocument();
+  }
+
   moveQuestion(direction: number): void {
     this.questionIndex = Math.max(0, Math.min(this.filteredQuestions.length - 1, this.questionIndex + direction));
     this.showAnswer = false;
@@ -354,6 +424,12 @@ class AppComponent implements AfterViewInit, OnDestroy {
   @HostListener('document:keydown.escape')
   closeAnswerOnEscape(): void {
     if (this.showAnswer) this.closeAnswer();
+    this.examOverviewOpen = false;
+  }
+
+  @HostListener('document:click')
+  closeExamOverviewOnOutsideClick(): void {
+    this.examOverviewOpen = false;
   }
 
   toggleDone(questionId: string): void {
