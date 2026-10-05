@@ -1,0 +1,198 @@
+<main class="app-shell">
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Examinator startpagina">
+      <span class="brand-mark">E</span>
+      <span><strong>Examinator</strong><small>Biologie · HAVO</small></span>
+    </a>
+    <div class="exam-overview" (click)="$event.stopPropagation()">
+      <button class="topbar-status" type="button" [attr.aria-label]="'Examenjaren en vragen: ' + examYears.join(', ')" [attr.aria-expanded]="examOverviewOpen" aria-controls="exam-overview-panel" (click)="examOverviewOpen = !examOverviewOpen">
+        <span class="status-dot"></span>
+        <span>Examenjaren</span>
+        <span class="overview-years">{{ examYears.join(' · ') }}</span>
+        <span class="overview-chevron" aria-hidden="true">⌄</span>
+      </button>
+      @if (examOverviewOpen) {
+        <section class="exam-overview-panel" id="exam-overview-panel" aria-label="Beschikbare examenjaren, tijdvakken en vragen">
+          <div class="overview-panel-heading">
+            <strong>Beschikbare examens</strong>
+            <span>{{ questions.length }} vragen</span>
+          </div>
+          @for (yearGroup of examOverview; track yearGroup.year) {
+            <section class="overview-year">
+              <h2>HAVO {{ yearGroup.year }}</h2>
+              @for (timevakGroup of yearGroup.timevakken; track timevakGroup.timevak) {
+                <div class="overview-timevak">
+                  <h3>Tijdvak {{ timevakGroup.timevak }} <span>{{ timevakGroup.questions.length }} vragen</span></h3>
+                  <div class="overview-questions">
+                    @for (question of timevakGroup.questions; track question.id) {
+                      <button type="button" class="overview-question" [class.current]="selectedQuestion?.id === question.id" [attr.aria-label]="'Vraag ' + question.number + ': ' + question.title" (click)="selectExamOverviewQuestion(question)">
+                        <span>{{ question.number }}</span>
+                        <strong>{{ question.title }}</strong>
+                      </button>
+                    }
+                  </div>
+                </div>
+              }
+            </section>
+          }
+        </section>
+      }
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-heading"><span>ONDERWERPEN</span><span>{{ topics.length }}</span></div>
+      <nav class="topic-nav" aria-label="Onderwerpen">
+        @for (topic of topics; track topic.id) {
+          <button class="topic-button" [class.active]="activeTopic === topic.id" (click)="selectTopic(topic.id)">
+            <span class="topic-number">{{ topic.id }}</span>
+            <span class="topic-name">{{ topic.title }}</span>
+            <span class="topic-count">{{ countFor(topic.id) }}</span>
+          </button>
+        }
+      </nav>
+
+      <div class="question-list-heading">
+        <span>VRAGEN</span>
+        <span>{{ filteredQuestions.length }}</span>
+      </div>
+      <div class="question-list">
+        @for (question of filteredQuestions; track question.id) {
+          <button class="question-link" [class.selected]="selectedQuestion?.id === question.id" (click)="selectQuestion(question)">
+            <span class="question-list-number">{{ question.number }}</span>
+            <span class="question-link-copy"><strong>{{ question.title }}</strong><small>{{ question.year }} · tijdvak {{ question.timevak }}</small></span>
+            @if (isDone(question.id)) { <span class="done-dot" aria-label="Gemaakt"></span> }
+          </button>
+        } @empty {
+          <p class="empty-list">Nog geen vragen uit 2023, 2024 of 2025 voor dit onderwerp.</p>
+        }
+      </div>
+
+      <div class="sidebar-footer">
+        <span class="progress-label">JOUW VOORTGANG</span>
+        <div class="progress-copy"><strong>{{ completedCount }}</strong><span>van {{ questions.length }} vragen gemaakt</span></div>
+        <div class="progress-track"><span [style.width.%]="progressPercent"></span></div>
+      </div>
+    </aside>
+
+    <section class="content-area">
+      @if (selectedQuestion; as question) {
+        <div class="content-heading">
+          <div>
+            <div class="breadcrumb">Biologie <span>/</span> {{ activeTopic }} {{ activeTopicTitle }}</div>
+            <h1>{{ question.title }}</h1>
+            <p class="exam-meta">HAVO {{ question.year }} <span>·</span> Tijdvak {{ question.timevak }} <span>·</span> Vraag {{ question.number }}</p>
+          </div>
+          <button class="done-button" [class.is-done]="isDone(question.id)" (click)="toggleDone(question.id)">
+            <span class="checkmark">{{ isDone(question.id) ? '✓' : '+' }}</span>
+            {{ isDone(question.id) ? 'Gemaakt' : 'Markeer als gemaakt' }}
+          </button>
+        </div>
+
+        <article class="exam-panel">
+          <div class="panel-bar">
+            <div><span class="panel-kicker">EXAMENVRAAG</span><strong>Vraag {{ question.number }}</strong></div>
+            <span class="page-label">Pagina {{ question.examPage }}</span>
+          </div>
+          <div class="document-searchbar" role="search" aria-label="Zoeken in examendocument">
+            <label class="document-search-field">
+              <span aria-hidden="true">⌕</span>
+              <input type="search" aria-label="Zoektekst in examendocument" placeholder="Zoek in dit document" [value]="searchQuery" (input)="updateSearchQuery($any($event.target).value)" (keydown.enter)="moveSearchMatch(1)" />
+            </label>
+            <span class="search-match-count" aria-live="polite">
+              @if (searching) {
+                Zoeken…
+              } @else if (searchError) {
+                {{ searchError }}
+              } @else if (searchQuery.trim()) {
+                {{ searchMatches.length ? activeSearchMatchIndex + 1 : 0 }} / {{ searchMatches.length }}
+              }
+            </span>
+            <div class="search-navigation">
+              <button type="button" aria-label="Vorige zoekresultaat" title="Vorige zoekresultaat" [disabled]="searching || searchMatches.length === 0" (click)="moveSearchMatch(-1)">←</button>
+              <button type="button" aria-label="Volgende zoekresultaat" title="Volgende zoekresultaat" [disabled]="searching || searchMatches.length === 0" (click)="moveSearchMatch(1)">→</button>
+            </div>
+          </div>
+          @if (examError) {
+            <p class="pdf-message pdf-error">{{ examError }}</p>
+          } @else if (examLoading && examPageNumbers.length === 0) {
+            <p class="pdf-message">Examendocument laden…</p>
+          }
+          <div class="exam-document" #examDocument aria-live="polite">
+            @for (page of examPageNumbers; track page) {
+              <section class="exam-page-sheet" [attr.data-page]="page">
+                <div class="exam-page-label">Examenpagina {{ page }}</div>
+                  @if (examPageErrors.get(page); as error) {
+                    <p class="pdf-message pdf-error">{{ error }}</p>
+                  }
+                <div class="exam-paper">
+                  @if (!renderedExamPages.has(page)) {
+                    <span class="exam-page-placeholder">Pagina laden…</span>
+                  }
+                  <canvas #examPageCanvas class="pdf-canvas" [attr.data-page]="page" [class.is-hidden]="!renderedExamPages.has(page)" [attr.aria-label]="'Examenpagina ' + page"></canvas>
+                  @for (match of searchMatchesForPage(page); track match.id) {
+                    <span class="exam-search-highlight" [class.is-current]="activeSearchMatchId === match.id" [style.left.px]="match.left" [style.top.px]="match.top" [style.width.px]="match.width" [style.height.px]="match.height" aria-hidden="true"></span>
+                  }
+                </div>
+              </section>
+            }
+          </div>
+          <div class="panel-actions">
+            <button class="answer-button" (click)="toggleAnswer()">{{ showAnswer ? 'Verberg antwoord' : 'Laat antwoord zien' }}</button>
+            <div class="question-navigation">
+              <button aria-label="Vorige vraag" [disabled]="questionIndex === 0" (click)="moveQuestion(-1)">← Vorige</button>
+              <span>{{ questionIndex + 1 }} / {{ filteredQuestions.length }}</span>
+              <button aria-label="Volgende vraag" [disabled]="questionIndex >= filteredQuestions.length - 1" (click)="moveQuestion(1)">Volgende →</button>
+            </div>
+          </div>
+        </article>
+
+        <div class="answer-backdrop" [class.is-open]="showAnswer" [attr.aria-hidden]="!showAnswer" (click)="closeAnswer()"></div>
+        <aside class="answer-drawer" [class.is-open]="showAnswer" role="dialog" [attr.aria-modal]="showAnswer ? 'true' : null" [attr.aria-hidden]="!showAnswer" [attr.inert]="showAnswer ? null : ''" [attr.aria-label]="'Correctievoorschrift voor vraag ' + question.number">
+            <header class="drawer-header">
+              <div class="drawer-heading">
+                <span class="panel-kicker">CORRECTIEVOORSCHRIFT</span>
+                <strong>Antwoord · vraag {{ question.number }}</strong>
+                <span class="drawer-meta">HAVO {{ question.year }} · tijdvak {{ question.timevak }}</span>
+              </div>
+              <span class="page-label">Pagina {{ question.answerPage }}</span>
+              <button class="drawer-close" aria-label="Sluit antwoordpaneel" title="Sluiten" (click)="closeAnswer()"><span aria-hidden="true">×</span></button>
+            </header>
+            <div class="pdf-page answer-page" aria-live="polite">
+              @if (answerError) {
+                <p class="pdf-message pdf-error">{{ answerError }}</p>
+              } @else if (answerLoading) {
+                <p class="pdf-message">Antwoordpagina laden…</p>
+              }
+              <div class="answer-page-stack">
+                <div class="answer-sheet">
+                  <span class="answer-sheet-label">Antwoordpagina {{ question.answerPage }}</span>
+                  <canvas #answerCanvas class="pdf-canvas" [class.is-hidden]="answerLoading || !!answerError" aria-label="Officieel correctievoorschrift voor de geselecteerde vraag"></canvas>
+                </div>
+                @if (previousAnswerPage; as page) {
+                  <div class="answer-sheet previous-answer-sheet">
+                    <span class="answer-sheet-label">Voorgaande antwoorden · pagina {{ page }}</span>
+                    @if (previousAnswerError) {
+                      <p class="pdf-message pdf-error">{{ previousAnswerError }}</p>
+                    } @else if (previousAnswerLoading) {
+                      <p class="pdf-message">Voorgaande antwoorden laden…</p>
+                    }
+                    <canvas #previousAnswerCanvas class="pdf-canvas" [class.is-hidden]="previousAnswerLoading || !!previousAnswerError" aria-label="Voorgaande antwoorden in het correctievoorschrift"></canvas>
+                  </div>
+                }
+              </div>
+            </div>
+        </aside>
+      } @else {
+        <div class="empty-state">
+          <span class="empty-index">{{ activeTopic }}</span>
+          <p class="breadcrumb">Biologie <span>/</span> {{ activeTopicTitle }}</p>
+          <h1>Geen vragen gevonden</h1>
+          <p>In de gekoppelde HAVO-examens van 2023, 2024 en 2025 staat geen vraag die bij dit onderwerp hoort.</p>
+          <p class="empty-hint">Kies een ander onderwerp of voeg meer passende examenvragen toe aan de map Data.</p>
+        </div>
+      }
+    </section>
+  </div>
+</main>

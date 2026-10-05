@@ -1,17 +1,17 @@
 :root {
-	color: #1b2a23;
+	color: #19352e;
 	background: #f3f6f2;
-	font-family: "Aptos", "Trebuchet MS", sans-serif;
+	font-family: "Bahnschrift", "Segoe UI Variable", "Aptos", sans-serif;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
-	--ink: #1b2a23;
-	--muted: #728078;
-	--line: #dce4dc;
+	--ink: #19352e;
+	--muted: #697d75;
+	--line: #dbe6e1;
 	--paper: #fff;
-	--green: #245b43;
-	--green-dark: #183e30;
-	--green-pale: #e8f1e9;
-	--gold: #e7aa49;
+	--green: #16745c;
+	--green-dark: #104b3e;
+	--green-pale: #e5f3ed;
+	--gold: #e4a83e;
 }
 
 * { box-sizing: border-box; }
@@ -23,8 +23,8 @@ button { font: inherit; }
 	height: 100dvh;
 	min-height: 0;
 	overflow: hidden;
-	background-color: #f3f6f2;
-	background-image: linear-gradient(135deg, rgba(255, 255, 255, .75), transparent 46%), repeating-linear-gradient(0deg, transparent, transparent 35px, rgba(36, 91, 67, .025) 36px);
+	background-color: #f2f6f4;
+	background-image: radial-gradient(ellipse at 82% 4%, rgba(35, 132, 104, .075), transparent 38%), linear-gradient(135deg, rgba(255, 255, 255, .9), transparent 54%);
 }
 .topbar {
 	height: 44px;
@@ -235,4 +235,83 @@ button:focus-visible, a:focus-visible { outline: 3px solid #e6aa49; outline-offs
 }
 @media (prefers-reduced-motion: reduce) {
 	*, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* Sharper hierarchy for the study workspace. */
+.topbar {
+	background: rgba(255, 255, 255, .96);
+	box-shadow: 0 1px 0 rgba(25, 53, 46, .025);
+}
+.brand-mark {
+	border-radius: 9px;
+	background: var(--green);
+	box-shadow: 0 3px 8px rgba(16, 75, 62, .2);
+}
+.sidebar {
+	background: rgba(255, 255, 255, .94);
+}
+.topic-button,
+.question-link,
+.overview-question,
+.done-button,
+.answer-button,
+.drawer-close {
+	transition: background-color .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.topic-button.active {
+	box-shadow: inset 3px 0 0 var(--green);
+}
+.question-link.selected {
+	border-color: #c9ded3;
+	box-shadow: 0 3px 12px rgba(16, 75, 62, .08);
+}
+.content-area {
+	padding-top: 27px;
+}
+h1 {
+	font-family: "Bahnschrift", "Segoe UI Variable", "Aptos", sans-serif;
+	font-size: clamp(25px, 2.4vw, 33px);
+	font-weight: 650;
+	letter-spacing: 0;
+}
+.exam-meta {
+	color: #647970;
+}
+.done-button:hover,
+.answer-button:hover,
+.drawer-close:hover {
+	transform: translateY(-1px);
+}
+.exam-panel {
+	border-color: #d2e0d9;
+	border-radius: 9px;
+	box-shadow: 0 10px 28px rgba(25, 53, 46, .075), 0 1px 3px rgba(25, 53, 46, .04);
+}
+.panel-bar {
+	background: linear-gradient(90deg, #fff, #f8fbf9);
+}
+.panel-kicker {
+	color: var(--green);
+}
+.pdf-page,
+.exam-document {
+	background: #e9efec;
+}
+.pdf-canvas,
+.exam-paper {
+	box-shadow: 0 4px 16px rgba(25, 53, 46, .14);
+}
+.answer-button {
+	border-color: var(--green);
+	border-radius: 6px;
+	box-shadow: 0 2px 5px rgba(16, 75, 62, .14);
+}
+.answer-button:hover {
+	background: #0d604b;
+}
+.progress-track span {
+	background: linear-gradient(90deg, #16745c, #49a77e);
+}
+button:focus-visible, a:focus-visible {
+	outline-color: #df9d31;
 }
