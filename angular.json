@@ -17,9 +17,7 @@
             "outputPath": "dist/examinator",
               "styles": ["src/styles.css"],
               "assets": [
-                { "glob": "2025_havo_tijdvak*.pdf", "input": "Data", "output": "Data" },
-                { "glob": "2025_tijdvlak2_antwoorden.pdf", "input": "Data", "output": "Data" },
-                { "glob": "2024_havo_tijdvak2_*.pdf", "input": "Data", "output": "Data" },
+                { "glob": "*.pdf", "input": "Data/processed", "output": "Data/processed" },
                 { "glob": "pdf.worker.min.mjs", "input": "node_modules/pdfjs-dist/build", "output": "assets" }
               ]
           }
