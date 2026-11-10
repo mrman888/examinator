@@ -27,7 +27,12 @@ To redeploy the currently published images without rebuilding:
 
 For code changes, omit `-SkipBuild` and choose a new `-ImageTag` (or omit the tag
 to generate a timestamp). Both Docker images were successfully built by ACR.
-The build script sets UTF-8 output for Azure CLI while streaming logs on Windows.
+The build script waits for ACR to finish with `--no-logs`; it does not use
+`--no-wait`. This avoids Windows Azure CLI encoding failures when Angular emits
+Unicode progress output. Failed ACR runs still fail the script. Inspect build
+logs in the registry's Tasks run history or with `az acr task logs`.
+Run the build-script regression checks without Azure access using
+`powershell -NoProfile -File .\deployment\tests\build.tests.ps1`.
 JSON management requests use temporary UTF-8 files to avoid Windows command-line
 quote removal; those files are deleted after each request.
 EasyAuth's hybrid sign-in flow requires ID-token issuance on its web registration;
@@ -49,8 +54,11 @@ Before the first run, an Azure/Entra administrator must:
    user-assigned managed identity, add a federated credential with issuer
    `https://token.actions.githubusercontent.com`, audience
    `api://AzureADTokenExchange`, and subject
-   `repo:mrman888/examinator:environment:development`. If the repository is
-   renamed or moved, update the subject. Configure the `development` GitHub
+   `repo:mrman888@13385447/examinator@1406228505:environment:development`.
+   Use the exact subject claim printed by `azure/login` in the workflow logs;
+   this repository uses GitHub's immutable-ID subject format, not the older
+   `repo:mrman888/examinator:environment:development` format. If the repository
+   is renamed or moved, verify the subject again. Configure the `development` GitHub
    environment to allow only `main`; enable required reviewers if available
    and desired. Restrict who can change workflows and start deployments.
 2. Grant the identity the Azure resource and role-assignment permissions
@@ -81,6 +89,16 @@ The workflow uses the script's existing resource group, registry and Foundry
 defaults; it does not provision Foundry. It does not configure GitHub
 environments, federation, permissions or secrets automatically. Azure
 resources, ACR builds and GitHub-hosted runner usage may incur charges.
+
+The development environment uses the dedicated user-assigned managed identity
+`examinator-github-deploy` in the `examinator` resource group. Its Contributor
+and Role Based Access Control Administrator assignments are scoped to that
+resource group, not the subscription. Its Microsoft Graph application grants
+are `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All`; these
+are tenant-wide privileges. Its federated credential accepts only the
+`development` environment subject above, and the GitHub environment permits
+only the `main` branch. `ALLOWED_USER_IDS` must preserve the complete approved
+gateway user list when changing deployment configuration.
 
 ## Architecture
 

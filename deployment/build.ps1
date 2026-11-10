@@ -70,17 +70,11 @@ foreach ($entry in @(
     @{ Path = 'server/Api/Dockerfile'; Image = "$($registry.loginServer)/examinator-api:$ImageTag" },
     @{ Path = 'server/Web/Dockerfile'; Image = "$($registry.loginServer)/examinator-web:$ImageTag" }
 )) {
-    $previousEncoding = $env:PYTHONIOENCODING
-    try {
-        $env:PYTHONIOENCODING = 'utf-8'
-        & az acr build --registry $RegistryName --file $entry.Path --image $entry.Image `
-            --subscription $SubscriptionId.ToString() $repositoryRoot --only-show-errors --output none | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "ACR build failed for $($entry.Path). The previous image, if any, was not rolled back."
-        }
-    }
-    finally {
-        $env:PYTHONIOENCODING = $previousEncoding
+    Write-Host "Building $($entry.Path); waiting for ACR completion without streaming logs."
+    & az acr build --registry $RegistryName --file $entry.Path --image $entry.Image `
+        --subscription $SubscriptionId.ToString() $repositoryRoot --no-logs --only-show-errors --output none | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "ACR build failed for $($entry.Path). See the ACR run details and logs. The previous image, if any, was not rolled back."
     }
 }
 
