@@ -15,7 +15,7 @@
             "index": "src/index.html",
             "tsConfig": "tsconfig.json",
             "outputPath": "dist/examinator",
-              "styles": ["src/styles.css"],
+              "styles": ["src/styles.scss"],
               "assets": [
                 { "glob": "2025_havo_tijdvak*.pdf", "input": "Data", "output": "Data" },
                 { "glob": "2025_tijdvlak2_antwoorden.pdf", "input": "Data", "output": "Data" },

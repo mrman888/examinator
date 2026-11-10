@@ -1,0 +1,32 @@
+<div class="answer-backdrop" [class.is-open]="open" [attr.aria-hidden]="!open" (click)="closed.emit()"></div>
+<aside class="answer-drawer" [class.is-open]="open" role="dialog" [attr.aria-modal]="open ? 'true' : null" [attr.aria-hidden]="!open" [attr.inert]="open ? null : ''" [attr.aria-label]="'Correctievoorschrift voor vraag ' + question.number">
+  <header class="drawer-header">
+    <div class="drawer-heading">
+      <span class="panel-kicker">CORRECTIEVOORSCHRIFT</span>
+      <strong>Antwoord · vraag {{ question.number }}</strong>
+      <span class="drawer-meta">HAVO {{ question.year }} · tijdvak {{ question.timevak }}</span>
+    </div>
+    <span class="page-label">Pagina {{ question.answerPage }} van {{ answerPageNumbers.length }}</span>
+    <button class="drawer-close" aria-label="Sluit antwoordpaneel" title="Sluiten" (click)="closed.emit()"><span aria-hidden="true">×</span></button>
+  </header>
+  <div class="pdf-page answer-page" #answerDocument aria-live="polite">
+    @if (answerError) {
+      <p class="pdf-message pdf-error">{{ answerError }}</p>
+    } @else if (answerLoading) {
+      <p class="pdf-message">Antwoordpagina laden…</p>
+    }
+    <div class="answer-page-stack">
+      @for (page of answerPageNumbers; track page) {
+        <div class="answer-sheet" [attr.data-page]="page">
+          <span class="answer-sheet-label">Correctievoorschrift · pagina {{ page }}</span>
+          @if (answerPageErrors.get(page); as error) {
+            <p class="pdf-message pdf-error">{{ error }}</p>
+          } @else if (!renderedAnswerPages.has(page)) {
+            <p class="pdf-message">Pagina laden…</p>
+          }
+          <canvas #answerPageCanvas [attr.data-page]="page" class="pdf-canvas" [class.is-hidden]="!renderedAnswerPages.has(page)" [attr.aria-label]="'Correctievoorschrift pagina ' + page"></canvas>
+        </div>
+      }
+    </div>
+  </div>
+</aside>

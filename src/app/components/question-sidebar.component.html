@@ -1,0 +1,34 @@
+<aside class="sidebar">
+  <div class="sidebar-heading"><span>ONDERWERPEN</span><span>{{ topics.length }}</span></div>
+  <nav class="topic-nav" aria-label="Onderwerpen">
+    @for (topic of topics; track topic.id) {
+      <button class="topic-button" [class.active]="activeTopic === topic.id" (click)="topicSelected.emit(topic.id)">
+        <span class="topic-number">{{ topic.id }}</span>
+        <span class="topic-name">{{ topic.title }}</span>
+        <span class="topic-count">{{ countFor(topic.id) }}</span>
+      </button>
+    }
+  </nav>
+
+  <div class="question-list-heading">
+    <span>VRAGEN</span>
+    <span>{{ filteredQuestions.length }}</span>
+  </div>
+  <div class="question-list">
+    @for (question of filteredQuestions; track question.id) {
+      <button class="question-link" [class.selected]="selectedQuestionId === question.id" (click)="questionSelected.emit(question)">
+        <span class="question-list-number">{{ question.number }}</span>
+        <span class="question-link-copy"><strong>{{ question.title }}</strong><small>{{ question.year }} · tijdvak {{ question.timevak }}</small></span>
+        @if (isDone(question.id)) { <span class="done-dot" aria-label="Gemaakt"></span> }
+      </button>
+    } @empty {
+      <p class="empty-list">Geen vragen gevonden voor dit onderwerp en examenjaar.</p>
+    }
+  </div>
+
+  <div class="sidebar-footer">
+    <span class="progress-label">JOUW VOORTGANG</span>
+    <div class="progress-copy"><strong>{{ completedCount }}</strong><span>van {{ questionCount }} vragen gemaakt</span></div>
+    <div class="progress-track"><span [style.width.%]="progressPercent"></span></div>
+  </div>
+</aside>

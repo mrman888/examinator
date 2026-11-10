@@ -1,0 +1,68 @@
+<main class="app-shell">
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Examinator startpagina">
+      <span class="brand-mark">E</span>
+      <span><strong>Examinator</strong><small>Biologie · HAVO</small></span>
+    </a>
+    <div class="year-picker" #yearPicker>
+      <button class="topbar-status" type="button" aria-label="Selecteer examen" [attr.aria-expanded]="yearMenuOpen" (click)="toggleYearMenu()">
+        <span class="status-dot"></span>
+        <span>{{ examMenuLabel }}</span>
+        <span class="year-chevron" aria-hidden="true">▾</span>
+      </button>
+      @if (yearMenuOpen) {
+        <div class="year-menu" aria-label="Beschikbare examens">
+          <button class="year-option" type="button" [class.selected]="activeExamFile === null" [attr.aria-pressed]="activeExamFile === null" (click)="selectExam(null)">
+            <span>Alle examens</span>
+            @if (activeExamFile === null) { <span aria-hidden="true">✓</span> }
+          </button>
+          @for (year of years; track year) {
+            <div class="year-menu-heading">{{ year }}</div>
+            @for (exam of examsForYear(year); track exam.examFile) {
+              <button class="year-option" type="button" [class.selected]="activeExamFile === exam.examFile" [attr.aria-pressed]="activeExamFile === exam.examFile" (click)="selectExam(exam)">
+                <span>Tijdvak {{ exam.timevak }}</span>
+                @if (activeExamFile === exam.examFile) { <span aria-hidden="true">✓</span> }
+              </button>
+            }
+          }
+        </div>
+      }
+    </div>
+  </header>
+
+  <div class="workspace">
+    <app-question-sidebar
+      [activeTopic]="activeTopic"
+      [selectedExamFile]="activeExamFile"
+      [selectedQuestionId]="selectedQuestion?.id ?? ''"
+      (topicSelected)="selectTopic($event)"
+      (questionSelected)="selectQuestion($event)"
+      (completionToggled)="toggleDone($event)"
+    />
+
+    <section class="content-area">
+      @if (selectedQuestion; as question) {
+        <app-exam-viewer
+          [question]="question"
+          [activeTopicTitle]="activeTopicTitle"
+          [questionIndex]="questionIndex"
+          [questionCount]="filteredQuestions.length"
+          [answerOpen]="showAnswer"
+          (answerToggled)="toggleAnswer()"
+          (completionToggled)="toggleDone(question.id)"
+          (previousQuestion)="moveQuestion(-1)"
+          (nextQuestion)="moveQuestion(1)"
+        />
+        <app-answer-drawer [question]="question" [open]="showAnswer" (closed)="closeAnswer()" />
+      } @else {
+        <div class="empty-state">
+          <span class="empty-index">{{ activeTopic }}</span>
+          <p class="breadcrumb">Biologie <span>/</span> {{ activeTopicTitle }}</p>
+          <h1>Geen vragen gevonden</h1>
+          <p>In de geselecteerde examenjaren staan geen vragen die bij dit onderwerp horen.</p>
+          <p class="empty-hint">Kies een ander onderwerp of voeg meer passende examenvragen toe aan de map Data.</p>
+        </div>
+      }
+    </section>
+  </div>
+</main>
