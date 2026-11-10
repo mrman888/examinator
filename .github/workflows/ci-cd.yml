@@ -1,0 +1,133 @@
+name: CI and manual deployment
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Manual deployment must be run from main."
+            exit 1
+          fi
+
+  frontend:
+    needs: validate-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  backend:
+    needs: validate-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test server/Tests/Tests.csproj --configuration Release
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: [frontend, backend]
+    runs-on: windows-latest
+    environment: development
+    concurrency:
+      group: azure-development-deployment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployment configuration
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+        run: |
+          foreach ($name in @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID')) {
+            $parsed = [guid]::Empty
+            if (-not [guid]::TryParse([Environment]::GetEnvironmentVariable($name), [ref]$parsed) -or $parsed -eq [guid]::Empty) {
+              throw "$name must be configured as a non-empty GUID in the development environment variables."
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ALLOWED_USER_IDS)) {
+            throw 'Configure ALLOWED_USER_IDS as a comma-separated list of approved Entra user object IDs in the development environment secrets.'
+          }
+          foreach ($value in $env:ALLOWED_USER_IDS.Split(',')) {
+            $parsed = [guid]::Empty
+            if (-not [guid]::TryParse($value.Trim(), [ref]$parsed) -or $parsed -eq [guid]::Empty) {
+              throw 'ALLOWED_USER_IDS must contain only non-empty GUIDs separated by commas.'
+            }
+          }
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and deploy with existing scripts
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $allowedUsers = @($env:ALLOWED_USER_IDS.Split(',') | ForEach-Object { [guid]$_.Trim() })
+          $imageTag = "gha-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & .\deployment\deploy.ps1 `
+            -SubscriptionId ([guid]$env:AZURE_SUBSCRIPTION_ID) `
+            -TenantId ([guid]$env:AZURE_TENANT_ID) `
+            -AllowedUserIds $allowedUsers `
+            -ImageTag $imageTag -Deploy -Confirm:$false
+      - name: Check public web health
+        shell: pwsh
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fqdn = az containerapp show --name examinator-web --resource-group examinator `
+            --subscription $env:AZURE_SUBSCRIPTION_ID --query properties.configuration.ingress.fqdn `
+            --output tsv --only-show-errors
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($fqdn)) {
+            throw 'Could not resolve the deployed web app hostname.'
+          }
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            try {
+              $response = Invoke-WebRequest -Uri "https://$fqdn/healthz" -TimeoutSec 20 -MaximumRedirection 0
+              if ($response.StatusCode -eq 200) {
+                Write-Host 'Web health endpoint returned HTTP 200.'
+                exit 0
+              }
+              Write-Warning "Web health check returned HTTP $($response.StatusCode)."
+            }
+            catch {
+              Write-Warning "Web health check attempt $attempt failed: $($_.Exception.Message)"
+            }
+            if ($attempt -lt 12) { Start-Sleep -Seconds 10 }
+          }
+          throw 'Web health endpoint did not return HTTP 200 after deployment.'

@@ -33,6 +33,55 @@ quote removal; those files are deleted after each request.
 EasyAuth's hybrid sign-in flow requires ID-token issuance on its web registration;
 the application deployment script configures this as well as the callback URL.
 
+## GitHub Actions CI and manual deployment
+
+`.github/workflows/ci-cd.yml` runs the Angular build and tests and the .NET
+tests on pull requests targeting `main` and on pushes to `main`. A manually
+started run on `main` runs those checks again and, only if they pass, invokes
+`deploy.ps1` against the existing development deployment. Pull requests and
+pushes never deploy. The script still uses remote ACR Build, so GitHub Actions
+orchestrates the deployment but does not replace Azure's build service.
+
+Before the first run, an Azure/Entra administrator must:
+
+1. Create a dedicated deployment identity, separate from the application
+   managed identities, and configure GitHub OIDC federation. For a
+   user-assigned managed identity, add a federated credential with issuer
+   `https://token.actions.githubusercontent.com`, audience
+   `api://AzureADTokenExchange`, and subject
+   `repo:mrman888/examinator:environment:development`. If the repository is
+   renamed or moved, update the subject. Configure the `development` GitHub
+   environment to allow only `main`; enable required reviewers if available
+   and desired. Restrict who can change workflows and start deployments.
+2. Grant the identity the Azure resource and role-assignment permissions
+   described in **Prerequisites and permissions**, scoped as narrowly as
+   possible, including ACR build/push. Grant the Microsoft Graph **application
+   permissions** required to read and reconcile registrations, service
+   principals and app-role assignments, with administrator consent. Azure
+   RBAC alone is not sufficient. The script may create or modify Entra
+   registrations, credentials and role assignments; review these elevated
+   permissions before granting them.
+3. In the GitHub `development` environment, set variables `AZURE_CLIENT_ID`
+   to the deployment identity's client ID, `AZURE_TENANT_ID` to the tenant ID,
+   and `AZURE_SUBSCRIPTION_ID` to the subscription ID. Set the environment
+   secret `ALLOWED_USER_IDS` to a comma-separated list of all approved Entra
+   **user object IDs**, including the current operator if they should retain
+   access. Service-principal sign-in does not automatically add a signed-in
+   user; the configured list replaces the gateway allowlist on deployment.
+4. Commit and push the workflow to `main`, then select **Actions → CI and
+   manual deployment → Run workflow**, choosing `main`. Environment approval,
+   if configured, happens before the Azure deployment job. Each attempt uses
+   its own `gha-<run-id>-<attempt>` image tag. Deployment concurrency prevents
+   overlapping runs, but a failed script can leave partial changes; inspect
+   the run and Azure resources before retrying. The workflow retries the public
+   web `/healthz` endpoint after deployment; this does not verify sign-in,
+   the private API, or Foundry inference end to end.
+
+The workflow uses the script's existing resource group, registry and Foundry
+defaults; it does not provision Foundry. It does not configure GitHub
+environments, federation, permissions or secrets automatically. Azure
+resources, ACR builds and GitHub-hosted runner usage may incur charges.
+
 ## Architecture
 
 - Resource group: `examinator`; region is constrained to **Sweden Central**
