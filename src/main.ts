@@ -166,29 +166,25 @@ const questions: ExamQuestion[] = [
                     <strong>Antwoord · vraag {{ question.number }}</strong>
                     <span class="drawer-meta">HAVO {{ question.year }} · tijdvak {{ question.timevak }}</span>
                   </div>
-                  <span class="page-label">Pagina {{ question.answerPage }}</span>
+                  <span class="page-label">Pagina {{ question.answerPage }} van {{ answerPageNumbers.length }}</span>
                   <button class="drawer-close" aria-label="Sluit antwoordpaneel" title="Sluiten" (click)="closeAnswer()"><span aria-hidden="true">×</span></button>
                 </header>
-                <div class="pdf-page answer-page" aria-live="polite">
+                <div class="pdf-page answer-page" #answerDocument aria-live="polite">
                   @if (answerError) {
                     <p class="pdf-message pdf-error">{{ answerError }}</p>
                   } @else if (answerLoading) {
                     <p class="pdf-message">Antwoordpagina laden…</p>
                   }
                   <div class="answer-page-stack">
-                    <div class="answer-sheet">
-                      <span class="answer-sheet-label">Antwoordpagina {{ question.answerPage }}</span>
-                      <canvas #answerCanvas class="pdf-canvas" [class.is-hidden]="answerLoading || !!answerError" aria-label="Officieel correctievoorschrift voor de geselecteerde vraag"></canvas>
-                    </div>
-                    @if (previousAnswerPage; as page) {
-                      <div class="answer-sheet previous-answer-sheet">
-                        <span class="answer-sheet-label">Voorgaande antwoorden · pagina {{ page }}</span>
-                        @if (previousAnswerError) {
-                          <p class="pdf-message pdf-error">{{ previousAnswerError }}</p>
-                        } @else if (previousAnswerLoading) {
-                          <p class="pdf-message">Voorgaande antwoorden laden…</p>
+                    @for (page of answerPageNumbers; track page) {
+                      <div class="answer-sheet" [attr.data-page]="page">
+                        <span class="answer-sheet-label">Correctievoorschrift · pagina {{ page }}</span>
+                        @if (answerPageErrors.get(page); as error) {
+                          <p class="pdf-message pdf-error">{{ error }}</p>
+                        } @else if (!renderedAnswerPages.has(page)) {
+                          <p class="pdf-message">Pagina laden…</p>
                         }
-                        <canvas #previousAnswerCanvas class="pdf-canvas" [class.is-hidden]="previousAnswerLoading || !!previousAnswerError" aria-label="Voorgaande antwoorden in het correctievoorschrift"></canvas>
+                        <canvas #answerPageCanvas [attr.data-page]="page" class="pdf-canvas" [class.is-hidden]="!renderedAnswerPages.has(page)" [attr.aria-label]="'Correctievoorschrift pagina ' + page"></canvas>
                       </div>
                     }
                   </div>
@@ -211,9 +207,9 @@ const questions: ExamQuestion[] = [
 class AppComponent implements AfterViewInit, OnDestroy {
   private readonly changeDetector = inject(ChangeDetectorRef);
   @ViewChild('examDocument') private examDocument?: ElementRef<HTMLDivElement>;
+  @ViewChild('answerDocument') private answerDocument?: ElementRef<HTMLDivElement>;
   @ViewChildren('examPageCanvas') private examCanvases!: QueryList<ElementRef<HTMLCanvasElement>>;
-  @ViewChild('answerCanvas') private answerCanvas?: ElementRef<HTMLCanvasElement>;
-  @ViewChild('previousAnswerCanvas') private previousAnswerCanvas?: ElementRef<HTMLCanvasElement>;
+  @ViewChildren('answerPageCanvas') private answerCanvases!: QueryList<ElementRef<HTMLCanvasElement>>;
 
   readonly topics = topics;
   readonly questions = questions;
@@ -225,12 +221,14 @@ class AppComponent implements AfterViewInit, OnDestroy {
   renderedExamPages = new Set<number>();
   examPageErrors = new Map<number, string>();
   answerLoading = true;
-  previousAnswerLoading = true;
   examError = '';
   answerError = '';
-  previousAnswerError = '';
+  answerPageNumbers: number[] = [];
+  renderedAnswerPages = new Set<number>();
+  answerPageErrors = new Map<number, string>();
   private doneIds = this.readDoneIds();
   private currentExamFile = '';
+  private answerRenderVersion = 0;
   private examRenderVersion = 0;
   private examObserver?: IntersectionObserver;
   private renderingExamPages = new Set<string>();
@@ -253,10 +251,6 @@ class AppComponent implements AfterViewInit, OnDestroy {
 
   get selectedQuestion(): ExamQuestion | undefined {
     return this.filteredQuestions[this.questionIndex];
-  }
-
-  get previousAnswerPage(): number {
-    return this.selectedQuestion && this.selectedQuestion.answerPage > 5 ? this.selectedQuestion.answerPage - 1 : 0;
   }
 
   get activeTopicTitle(): string {
@@ -301,7 +295,7 @@ class AppComponent implements AfterViewInit, OnDestroy {
   toggleAnswer(): void {
     this.showAnswer = !this.showAnswer;
     if (this.showAnswer) {
-      this.renderAnswerPage();
+      void this.renderAnswerDocument();
     }
   }
 
@@ -402,19 +396,52 @@ class AppComponent implements AfterViewInit, OnDestroy {
     container.scrollTo({ top, behavior: 'smooth' });
   }
 
-  private renderAnswerPage(): void {
+  private scrollToAnswerPage(pageNumber: number): void {
+    const container = this.answerDocument?.nativeElement;
+    const page = container?.querySelector<HTMLElement>(`.answer-sheet[data-page="${pageNumber}"]`);
+    if (!container || !page) return;
+    const top = page.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    container.scrollTo({ top, behavior: 'smooth' });
+  }
+
+  private async renderAnswerDocument(): Promise<void> {
     const question = this.selectedQuestion;
-    const canvas = this.answerCanvas?.nativeElement;
-    if (question && canvas) {
-      void this.renderPage(question.answerFile, question.answerPage, canvas, 'answer');
-      const previousCanvas = this.previousAnswerCanvas?.nativeElement;
-      if (this.previousAnswerPage && previousCanvas) {
-        void this.renderPage(question.answerFile, this.previousAnswerPage, previousCanvas, 'previousAnswer');
-      }
+    if (!question) return;
+
+    const renderVersion = ++this.answerRenderVersion;
+    this.answerPageNumbers = [];
+    this.renderedAnswerPages = new Set();
+    this.answerPageErrors = new Map();
+    this.answerLoading = true;
+    this.answerError = '';
+    this.changeDetector.detectChanges();
+
+    try {
+      const document = await this.loadDocument(question.answerFile);
+      if (renderVersion !== this.answerRenderVersion) return;
+
+      this.answerPageNumbers = Array.from({ length: document.numPages }, (_, index) => index + 1);
+      this.answerLoading = false;
+      this.changeDetector.detectChanges();
+      if (renderVersion !== this.answerRenderVersion) return;
+
+      await Promise.all(this.answerCanvases.map((canvas) => this.renderPage(
+        question.answerFile,
+        Number(canvas.nativeElement.dataset['page']),
+        canvas.nativeElement,
+        'answer',
+        renderVersion,
+      )));
+      if (renderVersion === this.answerRenderVersion) this.scrollToAnswerPage(question.answerPage);
+    } catch {
+      if (renderVersion !== this.answerRenderVersion) return;
+      this.answerLoading = false;
+      this.answerError = 'Het correctievoorschrift kon niet worden geladen.';
+      this.changeDetector.detectChanges();
     }
   }
 
-  private async renderPage(file: string, pageNumber: number, canvas: HTMLCanvasElement, kind: 'exam' | 'answer' | 'previousAnswer'): Promise<void> {
+  private async renderPage(file: string, pageNumber: number, canvas: HTMLCanvasElement, kind: 'exam' | 'answer', answerVersion?: number): Promise<void> {
     const renderKey = `${file}:${pageNumber}`;
     if (kind === 'exam') {
       if (this.renderingExamPages.has(renderKey) || this.renderedExamPages.has(pageNumber)) return;
@@ -425,8 +452,6 @@ class AppComponent implements AfterViewInit, OnDestroy {
     this.renderVersions.set(canvas, version);
     this.renderTasks.get(canvas)?.cancel();
     this.renderTasks.delete(canvas);
-    this.setPreviewState(kind, true, '');
-
     try {
       const document = await this.loadDocument(file);
       const rendered = await this.renderCanvasPage(document, pageNumber, canvas);
@@ -436,8 +461,10 @@ class AppComponent implements AfterViewInit, OnDestroy {
           this.renderedExamPages = new Set(this.renderedExamPages).add(pageNumber);
           this.examPageErrors.delete(pageNumber);
           this.changeDetector.detectChanges();
-        } else {
-          this.setPreviewState(kind, false, '');
+        } else if (answerVersion === this.answerRenderVersion) {
+          this.renderedAnswerPages = new Set(this.renderedAnswerPages).add(pageNumber);
+          this.answerPageErrors.delete(pageNumber);
+          this.changeDetector.detectChanges();
         }
       }
     } catch (error) {
@@ -447,8 +474,9 @@ class AppComponent implements AfterViewInit, OnDestroy {
         if (this.currentExamFile !== file) return;
         this.examPageErrors = new Map(this.examPageErrors).set(pageNumber, message);
         this.changeDetector.detectChanges();
-      } else {
-        this.setPreviewState(kind, false, message);
+      } else if (answerVersion === this.answerRenderVersion) {
+        this.answerPageErrors = new Map(this.answerPageErrors).set(pageNumber, message);
+        this.changeDetector.detectChanges();
       }
     } finally {
       if (kind === 'exam') this.renderingExamPages.delete(renderKey);
@@ -505,22 +533,6 @@ class AppComponent implements AfterViewInit, OnDestroy {
     }
     this.renderTasks.clear();
     this.renderVersions = new WeakMap<HTMLCanvasElement, number>();
-  }
-
-  private setPreviewState(kind: 'exam' | 'answer' | 'previousAnswer', loading: boolean, error: string): void {
-    if (kind === 'exam') {
-      this.examLoading = loading;
-      this.examError = error;
-    } else if (kind === 'answer') {
-      this.answerLoading = loading;
-      this.answerError = error;
-    } else {
-      this.previousAnswerLoading = loading;
-      this.previousAnswerError = error;
-    }
-    if (!loading) {
-      this.changeDetector.detectChanges();
-    }
   }
 
   private readDoneIds(): Set<string> {
