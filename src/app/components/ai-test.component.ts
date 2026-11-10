@@ -3,7 +3,6 @@ import { sendTestPrompt } from '../services/ai-test-client';
 
 @Component({
   selector: 'app-ai-test',
-  standalone: true,
   template: `
     <section class="ai-panel" aria-labelledby="ai-title">
       <p class="ai-label">AZURE FOUNDRY</p>

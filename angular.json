@@ -24,6 +24,12 @@
               ]
           }
         },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "buildTarget": "examinator:build"
+          }
+        },
         "serve": {
           "builder": "@angular/build:dev-server",
           "options": {

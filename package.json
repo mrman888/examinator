@@ -8,7 +8,7 @@
     "import": "node scripts/import.mjs",
     "build": "ng build",
     "start": "ng serve",
-    "test": "vitest run"
+    "test": "ng test --watch=false"
   },
   "dependencies": {
     "@angular/common": "22.2.1",
@@ -25,6 +25,7 @@
     "@angular/build": "22.2.1",
     "@angular/cli": "22.2.1",
     "@angular/compiler-cli": "22.2.1",
+    "happy-dom": "^21.0.4",
     "typescript": "~6.0.0",
     "vitest": "^5.1.0"
   }

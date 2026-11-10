@@ -1,47 +1,47 @@
 <div class="content-heading">
   <div>
-    <div class="breadcrumb">Biologie <span>/</span> {{ activeTopicTitle }}</div>
-    <h1>{{ question.title }}</h1>
-    <p class="exam-meta">HAVO {{ question.year }} <span>·</span> Tijdvak {{ question.timevak }} <span>·</span> Vraag {{ question.number }}</p>
+    <div class="breadcrumb">Biologie <span>/</span> {{ activeTopicTitle() }}</div>
+    <h1>{{ question().title }}</h1>
+    <p class="exam-meta">HAVO {{ question().year }} <span>·</span> Tijdvak {{ question().timevak }} <span>·</span> Vraag {{ question().number }}</p>
   </div>
-  <button class="done-button" [class.is-done]="isDone" (click)="completionToggled.emit()">
-    <span class="checkmark">{{ isDone ? '✓' : '+' }}</span>
-    {{ isDone ? 'Gemaakt' : 'Markeer als gemaakt' }}
+  <button class="done-button" [class.is-done]="isDone()" (click)="completionToggled.emit()">
+    <span class="checkmark">{{ isDone() ? '✓' : '+' }}</span>
+    {{ isDone() ? 'Gemaakt' : 'Markeer als gemaakt' }}
   </button>
 </div>
 
 <article class="exam-panel">
   <div class="panel-bar">
-    <div><span class="panel-kicker">EXAMENVRAAG</span><strong>Vraag {{ question.number }}</strong></div>
-    <span class="page-label">Pagina {{ question.examPage }}</span>
+    <div><span class="panel-kicker">EXAMENVRAAG</span><strong>Vraag {{ question().number }}</strong></div>
+    <span class="page-label">Pagina {{ question().examPage }}</span>
   </div>
-  @if (examError) {
-    <p class="pdf-message pdf-error">{{ examError }}</p>
-  } @else if (examLoading && examPageNumbers.length === 0) {
+  @if (examError()) {
+    <p class="pdf-message pdf-error">{{ examError() }}</p>
+  } @else if (examLoading() && examPageNumbers().length === 0) {
     <p class="pdf-message">Examendocument laden…</p>
   }
   <div class="exam-document" #examDocument aria-live="polite">
-    @for (page of examPageNumbers; track page) {
+    @for (page of examPageNumbers(); track page) {
       <section class="exam-page-sheet" [attr.data-page]="page">
         <div class="exam-page-label">Examenpagina {{ page }}</div>
-        @if (examPageErrors.get(page); as error) {
+        @if (examPageErrors().get(page); as error) {
           <p class="pdf-message pdf-error">{{ error }}</p>
         }
         <div class="exam-paper">
-          @if (!renderedExamPages.has(page)) {
+          @if (!renderedExamPages().has(page)) {
             <span class="exam-page-placeholder">Pagina laden…</span>
           }
-          <canvas #examPageCanvas class="pdf-canvas" [attr.data-page]="page" [class.is-hidden]="!renderedExamPages.has(page)" [attr.aria-label]="'Examenpagina ' + page"></canvas>
+          <canvas #examPageCanvas class="pdf-canvas" [attr.data-page]="page" [class.is-hidden]="!renderedExamPages().has(page)" [attr.aria-label]="'Examenpagina ' + page"></canvas>
         </div>
       </section>
     }
   </div>
   <div class="panel-actions">
-    <button class="answer-button" (click)="answerToggled.emit()">{{ answerOpen ? 'Verberg antwoord' : 'Laat antwoord zien' }}</button>
+    <button class="answer-button" (click)="answerToggled.emit()">{{ answerOpen() ? 'Verberg antwoord' : 'Laat antwoord zien' }}</button>
     <div class="question-navigation">
-      <button aria-label="Vorige vraag" [disabled]="questionIndex === 0" (click)="previousQuestion.emit()">← Vorige</button>
-      <span>{{ questionIndex + 1 }} / {{ questionCount }}</span>
-      <button aria-label="Volgende vraag" [disabled]="questionIndex >= questionCount - 1" (click)="nextQuestion.emit()">Volgende →</button>
+      <button aria-label="Vorige vraag" [disabled]="questionIndex() === 0" (click)="previousQuestion.emit()">← Vorige</button>
+      <span>{{ questionIndex() + 1 }} / {{ questionCount() }}</span>
+      <button aria-label="Volgende vraag" [disabled]="questionIndex() >= questionCount() - 1" (click)="nextQuestion.emit()">Volgende →</button>
     </div>
   </div>
 </article>

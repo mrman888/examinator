@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, computed, signal } from '@angular/core';
 import { countQuestionsForTopic, getProgressPercent, getQuestionsForTopic, readCompletedIds, toggleCompletedId } from './exam-data-logic';
 
 export interface ExamQuestion {
@@ -78,7 +78,10 @@ export class ExamDataService {
     timevak: question.timevak,
     examFile: question.examFile,
   }])).values()].sort((left, right) => right.year - left.year || left.timevak - right.timevak);
-  private doneIds = readCompletedIds(localStorage);
+  private readonly doneIds = signal(readCompletedIds(localStorage));
+  readonly completedCount = computed(() =>
+    this.questions.filter((question) => this.doneIds().has(question.id)).length);
+  readonly progressPercent = computed(() => getProgressPercent(this.questions.length, this.completedCount()));
 
   getExamsForYear(year: number): ExamSitting[] {
     return this.exams.filter((exam) => exam.year === year);
@@ -92,19 +95,11 @@ export class ExamDataService {
     return countQuestionsForTopic(this.questions, topicId, examFile);
   }
 
-  get completedCount(): number {
-    return this.questions.filter((question) => this.doneIds.has(question.id)).length;
-  }
-
-  get progressPercent(): number {
-    return getProgressPercent(this.questions.length, this.completedCount);
-  }
-
   isDone(questionId: string): boolean {
-    return this.doneIds.has(questionId);
+    return this.doneIds().has(questionId);
   }
 
   toggleDone(questionId: string): void {
-    this.doneIds = toggleCompletedId(localStorage, this.doneIds, questionId);
+    this.doneIds.update((ids) => toggleCompletedId(localStorage, ids, questionId));
   }
 }

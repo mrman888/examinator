@@ -1,4 +1,4 @@
-import { Component, ElementRef, HostListener, ViewChild, inject } from '@angular/core';
+import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { AnswerDrawerComponent } from './components/answer-drawer.component';
 import { AiTestComponent } from './components/ai-test.component';
 import { ExamViewerComponent } from './components/exam-viewer.component';
@@ -7,57 +7,56 @@ import { ExamDataService, type ExamQuestion, type ExamSitting } from './services
 
 @Component({
   selector: 'app-root',
-  standalone: true,
   imports: [QuestionSidebarComponent, ExamViewerComponent, AnswerDrawerComponent, AiTestComponent],
   templateUrl: './app.component.html',
+  host: {
+    '(document:click)': 'closeYearMenuOnOutsideClick($event)',
+    '(document:keydown.escape)': 'closeYearMenuOnEscape()',
+  },
 })
 export class AppComponent {
   private readonly examData = inject(ExamDataService);
-  @ViewChild('yearPicker') private yearPicker?: ElementRef<HTMLElement>;
+  private readonly yearPicker = viewChild<ElementRef<HTMLElement>>('yearPicker');
 
   readonly topics = this.examData.topics;
   readonly years = this.examData.years;
   readonly exams = this.examData.exams;
 
-  activeTopic = this.topics[0].id;
-  activeExamFile: string | null = null;
-  questionIndex = 0;
-  showAnswer = false;
-  yearMenuOpen = false;
-  showAiTest = false;
+  readonly activeTopic = signal(this.topics[0].id);
+  readonly activeExamFile = signal<string | null>(null);
+  readonly questionIndex = signal(0);
+  readonly showAnswer = signal(false);
+  readonly yearMenuOpen = signal(false);
+  readonly showAiTest = signal(false);
 
-  get filteredQuestions(): ExamQuestion[] {
-    return this.examData.getQuestionsForTopic(this.activeTopic, this.activeExamFile);
-  }
+  readonly filteredQuestions = computed(() =>
+    this.examData.getQuestionsForTopic(this.activeTopic(), this.activeExamFile()));
 
-  get selectedQuestion(): ExamQuestion | undefined {
-    return this.filteredQuestions[this.questionIndex];
-  }
+  readonly selectedQuestion = computed<ExamQuestion | undefined>(() => this.filteredQuestions()[this.questionIndex()]);
 
-  get activeTopicTitle(): string {
-    return this.topics.find((topic) => topic.id === this.activeTopic)?.title ?? '';
-  }
+  readonly activeTopicTitle = computed(() =>
+    this.topics.find((topic) => topic.id === this.activeTopic())?.title ?? '');
 
-  get examMenuLabel(): string {
-    const selectedExam = this.exams.find((exam) => exam.examFile === this.activeExamFile);
+  readonly examMenuLabel = computed(() => {
+    const selectedExam = this.exams.find((exam) => exam.examFile === this.activeExamFile());
     if (selectedExam) return `HAVO ${selectedExam.year} · tijdvak ${selectedExam.timevak}`;
 
     const firstYear = Math.min(...this.years);
     const lastYear = Math.max(...this.years);
     return `Examenjaren ${firstYear}-${lastYear}`;
-  }
+  });
 
   selectTopic(topicId: string): void {
-    this.activeTopic = topicId;
-    this.questionIndex = 0;
-    this.showAnswer = false;
+    this.activeTopic.set(topicId);
+    this.questionIndex.set(0);
+    this.showAnswer.set(false);
   }
 
   selectExam(exam: ExamSitting | null): void {
-    this.activeExamFile = exam?.examFile ?? null;
-    this.questionIndex = 0;
-    this.showAnswer = false;
-    this.yearMenuOpen = false;
+    this.activeExamFile.set(exam?.examFile ?? null);
+    this.questionIndex.set(0);
+    this.showAnswer.set(false);
+    this.yearMenuOpen.set(false);
   }
 
   examsForYear(year: number): ExamSitting[] {
@@ -65,29 +64,27 @@ export class AppComponent {
   }
 
   toggleYearMenu(): void {
-    this.yearMenuOpen = !this.yearMenuOpen;
+    this.yearMenuOpen.update((open) => !open);
   }
 
-  @HostListener('document:click', ['$event'])
   closeYearMenuOnOutsideClick(event: MouseEvent): void {
-    if (this.yearMenuOpen && !this.yearPicker?.nativeElement.contains(event.target as Node)) {
-      this.yearMenuOpen = false;
+    if (this.yearMenuOpen() && event.target instanceof Node && !this.yearPicker()?.nativeElement.contains(event.target)) {
+      this.yearMenuOpen.set(false);
     }
   }
 
-  @HostListener('document:keydown.escape')
   closeYearMenuOnEscape(): void {
-    this.yearMenuOpen = false;
+    this.yearMenuOpen.set(false);
   }
 
   selectQuestion(question: ExamQuestion): void {
-    this.questionIndex = this.filteredQuestions.findIndex((item) => item.id === question.id);
-    this.showAnswer = false;
+    this.questionIndex.set(this.filteredQuestions().findIndex((item) => item.id === question.id));
+    this.showAnswer.set(false);
   }
 
   moveQuestion(direction: number): void {
-    this.questionIndex = Math.max(0, Math.min(this.filteredQuestions.length - 1, this.questionIndex + direction));
-    this.showAnswer = false;
+    this.questionIndex.update((index) => Math.max(0, Math.min(this.filteredQuestions().length - 1, index + direction)));
+    this.showAnswer.set(false);
   }
 
   toggleDone(questionId: string): void {
@@ -95,10 +92,10 @@ export class AppComponent {
   }
 
   toggleAnswer(): void {
-    this.showAnswer = !this.showAnswer;
+    this.showAnswer.update((open) => !open);
   }
 
   closeAnswer(): void {
-    this.showAnswer = false;
+    this.showAnswer.set(false);
   }
 }
