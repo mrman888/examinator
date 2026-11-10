@@ -3,3 +3,6 @@ dist/
 .angular/
 Examenbundel_Compleet_HAVO_Biologie.pdf
 *.log
+**/bin/
+**/obj/
+**/TestResults/

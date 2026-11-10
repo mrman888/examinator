@@ -1,5 +1,6 @@
 import { Component, ElementRef, HostListener, ViewChild, inject } from '@angular/core';
 import { AnswerDrawerComponent } from './components/answer-drawer.component';
+import { AiTestComponent } from './components/ai-test.component';
 import { ExamViewerComponent } from './components/exam-viewer.component';
 import { QuestionSidebarComponent } from './components/question-sidebar.component';
 import { ExamDataService, type ExamQuestion, type ExamSitting } from './services/exam-data.service';
@@ -7,7 +8,7 @@ import { ExamDataService, type ExamQuestion, type ExamSitting } from './services
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [QuestionSidebarComponent, ExamViewerComponent, AnswerDrawerComponent],
+  imports: [QuestionSidebarComponent, ExamViewerComponent, AnswerDrawerComponent, AiTestComponent],
   templateUrl: './app.component.html',
 })
 export class AppComponent {
@@ -23,6 +24,7 @@ export class AppComponent {
   questionIndex = 0;
   showAnswer = false;
   yearMenuOpen = false;
+  showAiTest = false;
 
   get filteredQuestions(): ExamQuestion[] {
     return this.examData.getQuestionsForTopic(this.activeTopic, this.activeExamFile);

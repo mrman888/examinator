@@ -26,6 +26,9 @@
         },
         "serve": {
           "builder": "@angular/build:dev-server",
+          "options": {
+            "proxyConfig": "server/dev-proxy.json"
+          },
           "configurations": {
             "development": { "buildTarget": "examinator:build" }
           },

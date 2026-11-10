@@ -1,0 +1,19 @@
+@baseUrl = http://localhost:5298
+
+### Health
+GET {{baseUrl}}/healthz
+
+### Local development only: explicitly enable Development__AllowAnonymous on loopback
+POST {{baseUrl}}/api/test
+Content-Type: application/json
+
+{"prompt":"Leg in twee zinnen uit wat fotosynthese is."}
+
+### Invalid prompt
+POST {{baseUrl}}/api/test
+Content-Type: application/json
+
+{"prompt":""}
+
+### OpenAPI (development only)
+GET {{baseUrl}}/openapi/v1.json

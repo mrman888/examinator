@@ -4,6 +4,9 @@
       <span class="brand-mark">E</span>
       <span><strong>Examinator</strong><small>Biologie · HAVO</small></span>
     </a>
+    <button class="topbar-status" type="button" [attr.aria-pressed]="showAiTest" (click)="showAiTest = !showAiTest">
+      {{ showAiTest ? 'Terug naar examens' : 'AI testen' }}
+    </button>
     <div class="year-picker" #yearPicker>
       <button class="topbar-status" type="button" aria-label="Selecteer examen" [attr.aria-expanded]="yearMenuOpen" (click)="toggleYearMenu()">
         <span class="status-dot"></span>
@@ -41,7 +44,9 @@
     />
 
     <section class="content-area">
-      @if (selectedQuestion; as question) {
+      @if (showAiTest) {
+        <app-ai-test />
+      } @else if (selectedQuestion; as question) {
         <app-exam-viewer
           [question]="question"
           [activeTopicTitle]="activeTopicTitle"
