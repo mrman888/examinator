@@ -60,6 +60,9 @@ if ([string]::IsNullOrWhiteSpace($RegistryName)) {
 if ($SkipBuild -and [string]::IsNullOrWhiteSpace($ImageTag)) {
     throw 'Supply -ImageTag when using -SkipBuild.'
 }
+if ($SkipBuild -and $ImageTag -notmatch '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$') {
+    throw 'ImageTag contains characters that are not valid in an OCI image tag.'
+}
 if ([string]::IsNullOrWhiteSpace($ImageTag)) {
     $ImageTag = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 }
@@ -165,6 +168,13 @@ else {
         'acr', 'show', '--name', $RegistryName, '--resource-group', $ResourceGroupName,
         '--subscription', $subscription
     )
+    foreach ($repository in @('examinator-api', 'examinator-web')) {
+        $null = & az acr repository show --name $RegistryName --image "${repository}:$ImageTag" `
+            --subscription $subscription --only-show-errors --output none
+        if ($LASTEXITCODE -ne 0) {
+            throw "Image ${repository}:$ImageTag was not found in registry $RegistryName. Check the tag, or omit -SkipBuild to build new images."
+        }
+    }
     $apiImage = "$($registry.loginServer)/examinator-api:$ImageTag"
     $webImage = "$($registry.loginServer)/examinator-web:$ImageTag"
 }

@@ -70,6 +70,13 @@ To redeploy the currently published images without rebuilding:
     -ImageTag 'release-20261110-2044' -SkipBuild -Deploy
 ```
 
+To redeploy from GitHub Actions without rebuilding, run the workflow manually
+from `main` and set the `image_tag` input to an existing tag. Tests are skipped
+and `deploy.ps1 -SkipBuild` verifies that both `examinator-api` and
+`examinator-web` exist with that tag in the registry. Images built by the
+workflow are tagged `gha-<run id>-<attempt>`; the tag is printed in that run's
+deploy logs. Leave `image_tag` empty to test, build and deploy new images.
+
 For code changes, omit `-SkipBuild` and choose a new `-ImageTag` (or omit the tag
 to generate a timestamp). Both Docker images were successfully built by ACR.
 The build script waits for ACR to finish with `--no-logs`; it does not use

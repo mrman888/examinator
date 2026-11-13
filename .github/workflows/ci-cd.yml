@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Existing image tag to redeploy (e.g. gha-123456789-1). Leave empty to build new images.'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -18,13 +24,19 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           REF: ${{ github.ref }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           if [ "$REF" != "refs/heads/main" ]; then
             echo "::error::Manual deployment must be run from main."
             exit 1
           fi
+          if [ -n "$IMAGE_TAG" ] && ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::image_tag contains characters that are not valid in an OCI image tag."
+            exit 1
+          fi
 
   frontend:
+    if: inputs.image_tag == ''
     needs: validate-ref
     runs-on: ubuntu-latest
     steps:
@@ -38,6 +50,7 @@ jobs:
       - run: npm test
 
   backend:
+    if: inputs.image_tag == ''
     needs: validate-ref
     runs-on: ubuntu-latest
     steps:
@@ -48,8 +61,14 @@ jobs:
       - run: dotnet test server/Tests/Tests.csproj --configuration Release
 
   deploy:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    needs: [frontend, backend]
+    if: >-
+      always() &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      needs.validate-ref.result == 'success' &&
+      (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') &&
+      (needs.backend.result == 'success' || needs.backend.result == 'skipped')
+    needs: [validate-ref, frontend, backend]
     runs-on: windows-latest
     environment: development
     concurrency:
@@ -96,15 +115,26 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
           IMPORT_DEPLOYMENT_NAME: ${{ vars.IMPORT_DEPLOYMENT_NAME }}
+          EXISTING_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           $ErrorActionPreference = 'Stop'
           $allowedUsers = @($env:ALLOWED_USER_IDS.Split(',') | ForEach-Object { [guid]$_.Trim() })
-          $imageTag = "gha-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $skipBuild = -not [string]::IsNullOrWhiteSpace($env:EXISTING_IMAGE_TAG)
+          if ($skipBuild) {
+            $imageTag = $env:EXISTING_IMAGE_TAG.Trim()
+            if ($imageTag -notmatch '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$') {
+              throw 'image_tag contains characters that are not valid in an OCI image tag.'
+            }
+          }
+          else {
+            $imageTag = "gha-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          }
           & .\deployment\deploy.ps1 `
             -SubscriptionId ([guid]$env:AZURE_SUBSCRIPTION_ID) `
             -TenantId ([guid]$env:AZURE_TENANT_ID) `
             -AllowedUserIds $allowedUsers `
             -ImageTag $imageTag `
+            -SkipBuild:$skipBuild `
             -EnableImports:([bool](-not [string]::IsNullOrWhiteSpace($env:IMPORT_DEPLOYMENT_NAME))) `
             -ImportDeploymentName $env:IMPORT_DEPLOYMENT_NAME -Deploy -Confirm:$false
       - name: Check public web health
