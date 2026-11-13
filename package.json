@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^26.0.0"
+  },
   "scripts": {
     "inspect": "node scripts/inspect.mjs",
     "import": "node scripts/import.mjs",
