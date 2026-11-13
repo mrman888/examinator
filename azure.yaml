@@ -1,0 +1,32 @@
+name: examinator
+resourceGroup: ${AZURE_RESOURCE_GROUP}
+metadata:
+  template: examinator-azd@1.0.0
+infra:
+  provider: bicep
+  path: ./infra
+services:
+  api:
+    host: containerapp
+    image: ${API_IMAGE}
+    resourceGroup: ${AZURE_RESOURCE_GROUP}
+    apiVersion: 2025-07-01
+    docker:
+      imagePassthrough: true
+    hooks:
+      postdeploy:
+        shell: pwsh
+        run: ./deployment/azd/update-import-jobs.ps1
+  web:
+    host: containerapp
+    image: ${WEB_IMAGE}
+    resourceGroup: ${AZURE_RESOURCE_GROUP}
+    apiVersion: 2025-07-01
+    docker:
+      imagePassthrough: true
+    uses:
+      - api
+hooks:
+  postprovision:
+    shell: pwsh
+    run: ./deployment/azd/postprovision.ps1

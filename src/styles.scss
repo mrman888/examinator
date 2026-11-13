@@ -67,6 +67,11 @@ app-answer-drawer { display: contents; }
 .sidebar-heading, .question-list-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 10px; color: #7c8981; font-size: 10px; font-weight: 700; letter-spacing: 1.2px; }
 .sidebar-heading > span:last-child, .question-list-heading > span:last-child { font-weight: 500; letter-spacing: 0; }
 .topic-nav { display: grid; gap: 4px; margin: 12px 0 25px; }
+.topic-search { display: grid; gap: 6px; margin: 12px 10px 0; font-size: 11px; color: var(--muted); }
+.topic-search input { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 5px; font: inherit; color: var(--ink); }
+.topic-nav { overflow: auto; flex-shrink: 0; max-height: 32vh; }
+.catalog-notice { flex: 0 0 auto; width: min(100%, 1150px); margin: 0 0 12px 24px; padding: 9px; border: 1px solid #e8d5a8; border-radius: 5px; background: #fff8e7; color: #784b13; font-size: 11px; }
+.catalog-notice button { margin-left: 8px; border: 1px solid var(--line); border-radius: 4px; background: white; color: var(--ink); cursor: pointer; }
 .topic-button {
 	display: grid;
 	grid-template-columns: 39px minmax(0, 1fr) 22px;
@@ -176,6 +181,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid #e6aa49; outline-offs
 }
 @media (max-width: 650px) {
 	.topbar { height: 40px; padding: 0 12px; }
+	.brand { gap: 5px; }
+	.brand-mark { width: 24px; height: 24px; }
+	.brand strong { font-size: 14px; }
+	.brand small { font-size: 10px; }
 	.topbar-status { max-width: 140px; justify-content: flex-end; text-align: right; font-size: 10px; line-height: 1.1; }
 	.workspace { height: calc(100vh - 40px); height: calc(100dvh - 40px); min-height: 0; display: flex; flex-direction: column; }
 	.sidebar { width: 100%; height: auto; min-height: 0; flex: 0 0 auto; padding: 10px 14px 8px; border-right: 0; border-bottom: 1px solid var(--line); }

@@ -1,13 +1,16 @@
 <aside class="sidebar">
-  <div class="sidebar-heading"><span>ONDERWERPEN</span><span>{{ topics.length }}</span></div>
+  <div class="sidebar-heading"><span>ONDERWERPEN</span><span>{{ topics().length }}</span></div>
+  <label class="topic-search">Zoek onderwerp (alle hoofdstukken)
+    <input #search type="search" [value]="topicSearch()" (input)="topicSearch.set(search.value)" placeholder="Bijvoorbeeld mitose" />
+  </label>
   <nav class="topic-nav" aria-label="Onderwerpen">
-    @for (topic of topics; track topic.id) {
+    @for (topic of matchingTopics(); track topic.id) {
       <button class="topic-button" [class.active]="activeTopic() === topic.id" (click)="topicSelected.emit(topic.id)">
-        <span class="topic-number">{{ topic.id }}</span>
+        <span class="topic-number">{{ topic.paragraphNumber ?? '' }}</span>
         <span class="topic-name">{{ topic.title }}</span>
         <span class="topic-count">{{ countFor(topic.id) }}</span>
       </button>
-    }
+    } @empty { <p class="empty-list">Geen onderwerp gevonden.</p> }
   </nav>
 
   <div class="question-list-heading">
@@ -28,7 +31,7 @@
 
   <div class="sidebar-footer">
     <span class="progress-label">JOUW VOORTGANG</span>
-    <div class="progress-copy"><strong>{{ completedCount() }}</strong><span>van {{ questionCount }} vragen gemaakt</span></div>
+    <div class="progress-copy"><strong>{{ completedCount() }}</strong><span>van {{ questionCount() }} vragen gemaakt</span></div>
     <div class="progress-track"><span [style.width.%]="progressPercent()"></span></div>
   </div>
 </aside>

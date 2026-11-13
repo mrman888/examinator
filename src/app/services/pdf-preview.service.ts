@@ -3,6 +3,12 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTas
 
 GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.mjs';
 
+export function pdfDocumentUrl(file: string): string {
+  if (/^\/api\/documents\/[a-zA-Z0-9_-]+$/.test(file)) return file;
+  if (/^[a-zA-Z0-9_.-]+\.pdf$/i.test(file)) return `Data/${file}`;
+  throw new Error('Ongeldig PDF-documentpad.');
+}
+
 @Injectable({ providedIn: 'root' })
 export class PdfPreviewService {
   private readonly documents = new Map<string, Promise<PDFDocumentProxy>>();
@@ -12,7 +18,12 @@ export class PdfPreviewService {
   loadDocument(file: string): Promise<PDFDocumentProxy> {
     let documentPromise = this.documents.get(file);
     if (!documentPromise) {
-      documentPromise = getDocument({ url: `Data/${file}` }).promise;
+      documentPromise = getDocument({
+        url: pdfDocumentUrl(file), withCredentials: true, wasmUrl: '/assets/pdf-wasm/', stopAtErrors: true,
+      }).promise.catch((error: unknown) => {
+        this.documents.delete(file);
+        throw error;
+      });
       this.documents.set(file, documentPromise);
     }
     return documentPromise;

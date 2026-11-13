@@ -94,13 +94,70 @@ public sealed class ApiTests
         Assert.DoesNotContain("private provider content", await response.Content.ReadAsStringAsync());
     }
 
-    private sealed class ApiFactory : WebApplicationFactory<ApiAssemblyMarker>
+    [Fact]
+    public async Task ImportRoutesRequireGatewayAndFailClosed()
+    {
+        await using var app = new ApiFactory();
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/subjects")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/catalog")).StatusCode);
+        using var client = app.AuthenticatedClient();
+        Assert.Contains("biology", await client.GetStringAsync("/api/subjects"));
+        foreach (var path in new[] { "/api/catalog?subjectId=biology", "/api/imports", "/api/imports/id", "/api/documents/id" })
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync(path)).StatusCode);
+        foreach (var path in new[] { "/api/imports", "/api/imports/id/confirm-definitions",
+            "/api/imports/id/publish", "/api/imports/id/cancel", "/api/imports/id/retry" })
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsync(path, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable,
+            (await client.PatchAsync("/api/imports/id/draft", JsonContent.Create(new { }))).StatusCode);
+        Assert.Equal(0, app.Foundry.Calls);
+    }
+
+    [Fact]
+    public async Task EnabledImportUploadAndProtectedRangeDeliveryUseRealEndpoints()
+    {
+        await using var app = new ApiFactory(imports: true);
+        using var client = app.AuthenticatedClient();
+        using var content = new MultipartFormDataContent();
+        var form = ImportProcessorTests.Form();
+        content.Add(new StringContent(form["metadata"].ToString()), "metadata");
+        foreach (var file in form.Files)
+        {
+            using var bytes = new MemoryStream();
+            await file.CopyToAsync(bytes);
+            await bytes.WriteAsync(new byte[40_000]);
+            content.Add(new ByteArrayContent(bytes.ToArray()), file.Name, file.FileName);
+        }
+        using var uploaded = await client.PostAsync("/api/imports", content);
+        Assert.Equal(HttpStatusCode.Accepted, uploaded.StatusCode);
+        var record = (await uploaded.Content.ReadFromJsonAsync<ImportRecord>())!;
+        Assert.Equal($"/api/imports/{record.Id}", uploaded.Headers.Location!.OriginalString);
+        Assert.Equal("queued", record.State);
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/documents/{record.ExamDocumentId}");
+        request.Headers.Range = new RangeHeaderValue(0, 4);
+        using var document = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.PartialContent, document.StatusCode);
+        Assert.Equal("%PDF-", await document.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/documents/not-an-id")).StatusCode);
+        using var draft = await client.PatchAsJsonAsync($"/api/imports/{record.Id}/draft", new
+        {
+            revision = record.Revision, topics = record.Topics, questions = Array.Empty<DraftQuestion>(),
+            padding = new string('x', 300_000)
+        });
+        Assert.Equal(HttpStatusCode.Conflict, draft.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.PostAsJsonAsync($"/api/imports/{record.Id}/publish", new RevisionUpdate(record.Revision))).StatusCode);
+        Assert.Equal(0, app.Foundry.Calls);
+    }
+
+    private sealed class ApiFactory(bool imports = false) : WebApplicationFactory<ApiAssemblyMarker>
     {
         public const string TenantId = "11111111-1111-1111-1111-111111111111";
         public const string ClientId = "22222222-2222-2222-2222-222222222222";
         public const string GatewayId = "33333333-3333-3333-3333-333333333333";
         private readonly RsaSecurityKey key = new(RSA.Create(2048)) { KeyId = "test-key" };
         public FakeFoundry Foundry { get; } = new();
+        private readonly MemoryImportStore store = new();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -111,12 +168,23 @@ public sealed class ApiTests
                     ["Azure:TenantId"] = TenantId,
                     ["Azure:ApiClientId"] = ClientId,
                     ["Azure:GatewayPrincipalId"] = GatewayId,
-                    ["Development:AllowAnonymous"] = "true"
+                    ["Development:AllowAnonymous"] = "true",
+                    ["Import:Enabled"] = imports.ToString(),
+                    ["Storage:BlobEndpoint"] = "https://blob.example/",
+                    ["Storage:QueueEndpoint"] = "https://queue.example/",
+                    ["Storage:TableEndpoint"] = "https://table.example/",
+                    ["Foundry:ImportDeployment"] = "synthetic"
                 }));
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IFoundryClient>();
                 services.AddSingleton<IFoundryClient>(Foundry);
+                if (imports)
+                {
+                    services.RemoveAll<IImportPersistence>();
+                    services.AddSingleton<IImportPersistence>(store);
+                    services.AddScoped<IExamImports, ExamImports>();
+                }
                 services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                 {
                     var config = new OpenIdConnectConfiguration

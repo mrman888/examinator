@@ -21,6 +21,8 @@ builder.Services.AddSingleton<TokenCredential>(_ => builder.Environment.IsDevelo
         builder.Configuration["Azure:ManagedIdentityClientId"]
         ?? throw new InvalidOperationException("Configure the website managed identity client ID."))));
 builder.Services.AddHttpClient<IGatewayClient, GatewayClient>(client => client.Timeout = TimeSpan.FromSeconds(110));
+builder.Services.AddHttpClient<IImportGateway, ImportGateway>(client => client.Timeout = TimeSpan.FromSeconds(110))
+    .ConfigurePrimaryHttpMessageHandler(ImportGateway.CreateHandler);
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GatewayExceptionHandler>();
 builder.Services.AddRateLimiter(options =>
@@ -80,6 +82,7 @@ app.MapPost("/api/test", async Task<IResult> (
         return TypedResults.Problem(statusCode: 400, title: "Enter between 1 and 2000 characters.");
     return await client.SendAsync(request, cancellationToken);
 }).RequireRateLimiting("Prompts");
+app.MapImportGateway(gateway);
 app.Map("/api/{**path}", () => TypedResults.NotFound());
 app.UseDefaultFiles();
 app.UseStaticFiles();

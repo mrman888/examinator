@@ -13,6 +13,9 @@ public sealed class ApiExceptionHandler(ILogger<ApiExceptionHandler> logger) : I
             return false;
         var (status, title) = exception switch
         {
+            ImportProblem problem => (problem.Status, problem.Message),
+            RequestFailedException { Status: 409 or 412 } => (409, "The import changed. Reload before continuing."),
+            BadHttpRequestException { StatusCode: 413 } => (413, "The request is too large."),
             OperationCanceledException => (504, "The model request timed out. Please try again."),
             HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } =>
                 (429, "The model is busy. Please wait before trying again."),

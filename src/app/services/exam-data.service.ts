@@ -1,5 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 import { countQuestionsForTopic, getProgressPercent, getQuestionsForTopic, readCompletedIds, toggleCompletedId } from './exam-data-logic';
+import { loadCatalog, type ExamCatalog, type TopicDefinition } from './exam-import-client';
 
 export interface ExamQuestion {
   id: string;
@@ -17,6 +18,9 @@ export interface ExamQuestion {
 export interface ExamTopic {
   id: string;
   title: string;
+  paragraphNumber?: string | null;
+  chapterNumber?: string | null;
+  aliases?: string[];
 }
 
 export interface ExamSitting {
@@ -31,6 +35,22 @@ const TOPICS: ExamTopic[] = [
   { id: '2.3', title: 'Celdeling en kanker' },
   { id: '2.4', title: 'Kweken van cellen, weefsel en organen' },
   { id: '2.5', title: 'Bacteriën, schimmels en planten' },
+];
+
+const LEGACY_TOPIC_IDS: Record<string, string> = {
+  'biology-cells': '2.1',
+  'biology-dna': '2.2',
+  'biology-cell-division': '2.3',
+  'biology-cell-culture': '2.4',
+  'biology-organisms': '2.5',
+};
+
+const INITIAL_DEFINITIONS: TopicDefinition[] = [
+  { id: 'biology-cells', title: TOPICS[0].title, description: 'Bouw, onderdelen en functies van menselijke en dierlijke cellen.', keywords: ['cel', 'organel'], aliases: ['cellen'], exclusions: [], chapterNumber: '2', paragraphNumber: '2.1' },
+  { id: 'biology-dna', title: TOPICS[1].title, description: 'DNA, genen, erfelijke variatie en specialisatie van cellen.', keywords: ['DNA', 'gen', 'differentiatie'], aliases: ['erfelijkheid'], exclusions: [], chapterNumber: '2', paragraphNumber: '2.2' },
+  { id: 'biology-cell-division', title: TOPICS[2].title, description: 'Mitose, regulatie van celdeling en ongecontroleerde celdeling bij kanker.', keywords: ['mitose', 'celcyclus', 'tumorcellen'], aliases: ['mitose', 'kanker'], exclusions: ['alleen een tumor noemen zonder celdeling te toetsen'], chapterNumber: '2', paragraphNumber: '2.3' },
+  { id: 'biology-cell-culture', title: TOPICS[3].title, description: 'Het kweken van cellen, weefsels en organen en de toepassing van stamcellen.', keywords: ['celkweek', 'stamcel'], aliases: ['weefselkweek'], exclusions: [], chapterNumber: '2', paragraphNumber: '2.4' },
+  { id: 'biology-organisms', title: TOPICS[4].title, description: 'Kenmerken en biologische processen van bacteriën, schimmels en planten.', keywords: ['bacterie', 'schimmel', 'plant'], aliases: ['micro-organismen'], exclusions: ['een organisme alleen als context noemen'], chapterNumber: '2', paragraphNumber: '2.5' },
 ];
 
 const QUESTIONS: ExamQuestion[] = [
@@ -70,29 +90,76 @@ const QUESTIONS: ExamQuestion[] = [
 
 @Injectable({ providedIn: 'root' })
 export class ExamDataService {
-  readonly topics = TOPICS;
-  readonly questions = QUESTIONS;
-  readonly years = [...new Set(QUESTIONS.map((question) => question.year))].sort((left, right) => right - left);
-  readonly exams: ExamSitting[] = [...new Map(QUESTIONS.map((question) => [question.examFile, {
+  private readonly catalog = signal<ExamCatalog | null>(null);
+  private readonly error = signal('');
+  private readonly loading = signal(false);
+  readonly catalogError = this.error.asReadonly();
+  readonly catalogLoading = this.loading.asReadonly();
+  readonly topicDefinitions = computed(() => {
+    const topics = new Map(INITIAL_DEFINITIONS.map((topic) => [topic.id, topic]));
+    for (const topic of this.catalog()?.topics ?? []) topics.set(topic.id, topic);
+    return [...topics.values()];
+  });
+  readonly topics = computed<ExamTopic[]>(() => this.topicDefinitions().map((topic) => ({
+    id: LEGACY_TOPIC_IDS[topic.id] ?? topic.id,
+    title: topic.title,
+    paragraphNumber: topic.paragraphNumber,
+    chapterNumber: topic.chapterNumber,
+    aliases: topic.aliases,
+  })));
+  readonly questions = computed<ExamQuestion[]>(() => {
+    const importedExams = (this.catalog()?.exams ?? []).filter((exam) => exam.subjectId === 'biology');
+    const replacedSittings = new Set(importedExams.map((exam) => `${exam.year}:${exam.timevak}`));
+    const existingIds = new Map(QUESTIONS.map((question) => [`${question.year}:${question.timevak}:${question.number}`, question.id]));
+    return [
+      ...QUESTIONS.filter((question) => !replacedSittings.has(`${question.year}:${question.timevak}`)),
+      ...(this.catalog()?.questions ?? []).filter((question) => question.subjectId === 'biology' && question.topics.length > 0)
+        .map((question) => ({
+          ...question,
+          id: existingIds.get(`${question.year}:${question.timevak}:${question.number}`) ?? question.id,
+          topics: question.topics.map((id) => LEGACY_TOPIC_IDS[id] ?? id),
+        })),
+    ];
+  });
+  readonly years = computed(() => [...new Set(this.exams().map((exam) => exam.year))].sort((left, right) => right - left));
+  readonly exams = computed<ExamSitting[]>(() => [...new Map([
+    ...QUESTIONS.map((question) => [`${question.year}:${question.timevak}`, {
     year: question.year,
     timevak: question.timevak,
     examFile: question.examFile,
-  }])).values()].sort((left, right) => right.year - left.year || left.timevak - right.timevak);
+    }] as const),
+    ...(this.catalog()?.exams ?? []).filter((exam) => exam.subjectId === 'biology')
+      .map((exam) => [`${exam.year}:${exam.timevak}`, { year: exam.year, timevak: exam.timevak, examFile: exam.examFile }] as const),
+  ]).values()].sort((left, right) => right.year - left.year || left.timevak - right.timevak));
   private readonly doneIds = signal(readCompletedIds(localStorage));
   readonly completedCount = computed(() =>
-    this.questions.filter((question) => this.doneIds().has(question.id)).length);
-  readonly progressPercent = computed(() => getProgressPercent(this.questions.length, this.completedCount()));
+    this.questions().filter((question) => this.doneIds().has(question.id)).length);
+  readonly progressPercent = computed(() => getProgressPercent(this.questions().length, this.completedCount()));
+
+  async refreshCatalog(signal: AbortSignal): Promise<void> {
+    this.loading.set(true);
+    this.error.set('');
+    try {
+      const catalog = await loadCatalog(signal);
+      if (!signal.aborted) this.catalog.set(catalog);
+    } catch (error: unknown) {
+      if (signal.aborted) return;
+      this.error.set(error instanceof Error ? error.message : 'De examencatalogus kon niet worden geladen.');
+    } finally {
+      if (!signal.aborted) this.loading.set(false);
+    }
+  }
 
   getExamsForYear(year: number): ExamSitting[] {
-    return this.exams.filter((exam) => exam.year === year);
+    return this.exams().filter((exam) => exam.year === year);
   }
 
   getQuestionsForTopic(topicId: string, examFile: string | null = null): ExamQuestion[] {
-    return getQuestionsForTopic(this.questions, topicId, examFile);
+    return getQuestionsForTopic(this.questions(), topicId, examFile);
   }
 
   countFor(topicId: string, examFile: string | null = null): number {
-    return countQuestionsForTopic(this.questions, topicId, examFile);
+    return countQuestionsForTopic(this.questions(), topicId, examFile);
   }
 
   isDone(questionId: string): boolean {

@@ -6,6 +6,7 @@ COPY server/Api/ server/Api/
 RUN dotnet publish server/Api/Api.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app .
 USER $APP_UID

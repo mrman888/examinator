@@ -19,6 +19,7 @@ describe('signal-based exam components', () => {
     loadDocument.mockReset().mockResolvedValue({ numPages: 20 });
     renderPage.mockReset().mockResolvedValue(true);
     cancelRender.mockReset();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ subjects: [{ id: 'biology', title: 'Biologie' }], topics: [], questions: [], exams: [] })));
     vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
     TestBed.configureTestingModule({
       providers: [{
@@ -27,12 +28,13 @@ describe('signal-based exam components', () => {
       }],
     });
     data = TestBed.inject(ExamDataService);
-    question = data.questions[0];
+    question = data.questions()[0];
   });
 
   afterEach(() => {
     TestBed.resetTestingModule();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     localStorage.clear();
   });
 
@@ -57,11 +59,46 @@ describe('signal-based exam components', () => {
     expect(root.querySelector('.progress-copy strong')?.textContent).toBe('1');
     expect(root.querySelector('.done-dot')).not.toBeNull();
     expect(data.completedCount()).toBe(1);
-    expect(data.progressPercent()).toBe(100 / data.questions.length);
+    expect(data.progressPercent()).toBe(100 / data.questions().length);
     data.toggleDone(question.id);
     await fixture.whenStable();
     expect(root.querySelector('.progress-copy strong')?.textContent).toBe('0');
     expect(root.querySelector('.done-dot')).toBeNull();
+  });
+
+  describe.each(['import', 'AI test'] as const)('returning from the %s panel', (panel) => {
+    it.each(['question', 'topic', 'exam'] as const)('restores the document preview when selecting a %s', async (selection) => {
+      const fixture = TestBed.createComponent(AppComponent);
+      await fixture.whenStable();
+      const root: HTMLElement = fixture.nativeElement;
+      const panelSelector = panel === 'import' ? 'app-exam-import' : 'app-ai-test';
+      const panelButton = root.querySelectorAll<HTMLButtonElement>('.topbar > button')[panel === 'import' ? 0 : 1];
+      if (panel === 'import') vi.mocked(fetch).mockResolvedValueOnce(Response.json([]));
+      panelButton.click();
+      await fixture.whenStable();
+      expect(root.querySelector(panelSelector)).not.toBeNull();
+      expect(root.querySelector('app-exam-viewer')).toBeNull();
+      loadDocument.mockClear();
+      renderPage.mockClear();
+
+      if (selection === 'question') {
+        root.querySelector<HTMLButtonElement>('.question-link')!.click();
+      } else if (selection === 'topic') {
+        root.querySelector<HTMLButtonElement>('.topic-button')!.click();
+      } else {
+        root.querySelector<HTMLButtonElement>('[aria-label="Selecteer examen"]')!.click();
+        await fixture.whenStable();
+        root.querySelector<HTMLButtonElement>('.year-option')!.click();
+      }
+      await fixture.whenStable();
+
+      expect(root.querySelector(panelSelector)).toBeNull();
+      expect(panelButton.getAttribute('aria-pressed')).toBe('false');
+      expect(root.querySelector('app-exam-viewer h1')?.textContent).toBe(question.title);
+      expect(loadDocument).toHaveBeenCalledWith(question.examFile);
+      expect(renderPage).toHaveBeenCalledWith(question.examFile, question.examPage, expect.any(HTMLCanvasElement));
+      expect(root.querySelector(`app-exam-viewer canvas[data-page="${question.examPage}"]`)?.classList.contains('is-hidden')).toBe(false);
+    });
   });
 
   it('resets navigation and answer state when the topic or exam changes, including empty results', async () => {
@@ -76,7 +113,7 @@ describe('signal-based exam components', () => {
     expect(app.showAnswer()).toBe(false);
     expect(app.selectedQuestion()?.topics).toContain('2.4');
 
-    app.selectExam(data.exams.find((exam) => exam.year === 2024)!);
+    app.selectExam(data.exams().find((exam) => exam.year === 2024)!);
     await fixture.whenStable();
     expect(app.selectedQuestion()).toBeUndefined();
     const root: HTMLElement = fixture.nativeElement;
@@ -109,7 +146,7 @@ describe('signal-based exam components', () => {
     root.querySelector<HTMLButtonElement>('[aria-label="Volgende vraag"]')!.click();
     expect(next).toHaveBeenCalledOnce();
 
-    const sameFileQuestion = data.questions.find((item) => item.examFile === question.examFile && item.examPage !== question.examPage)!;
+    const sameFileQuestion = data.questions().find((item) => item.examFile === question.examFile && item.examPage !== question.examPage)!;
     fixture.componentRef.setInput('question', sameFileQuestion);
     await fixture.whenStable();
     expect(loadDocument).toHaveBeenCalledTimes(1);
@@ -127,7 +164,7 @@ describe('signal-based exam components', () => {
     const fixture = TestBed.createComponent(ExamViewerComponent);
     fixture.componentRef.setInput('question', question);
     await fixture.whenStable();
-    const otherQuestion = data.questions.find((item) => item.examFile !== question.examFile)!;
+    const otherQuestion = data.questions().find((item) => item.examFile !== question.examFile)!;
     fixture.componentRef.setInput('question', otherQuestion);
     await fixture.whenStable();
     resolveOld({ numPages: 99 });

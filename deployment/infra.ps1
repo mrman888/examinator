@@ -8,6 +8,7 @@ param(
     [string] $Location = 'swedencentral',
     [string] $RegistryName,
     [string] $EnvironmentName = 'examinator-aca',
+    [switch] $EnableImports,
     [switch] $Deploy
 )
 
@@ -37,7 +38,7 @@ if ($RegistryName -notmatch '^[a-z0-9]{5,50}$') {
 }
 
 $subscription = $SubscriptionId.ToString()
-$null = Invoke-AzJson -Arguments @('account', 'show', '--subscription', $subscription)
+$account = Invoke-AzJson -Arguments @('account', 'show', '--subscription', $subscription)
 $template = Join-Path $PSScriptRoot 'main.bicep'
 & az bicep build --file $template --stdout --only-show-errors | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -67,6 +68,12 @@ if (-not $Deploy) {
 if (-not $PSCmdlet.ShouldProcess("$subscription/$ResourceGroupName", 'Provision deployment base infrastructure')) {
     return
 }
+$writer = if ($account.user.type -eq 'servicePrincipal') {
+    Invoke-AzJson -Arguments @('ad', 'sp', 'show', '--id', $account.user.name, '--query', 'id')
+} else {
+    Invoke-AzJson -Arguments @('ad', 'signed-in-user', 'show', '--query', 'id')
+}
+if ([string]::IsNullOrWhiteSpace([string]$writer)) { throw 'Resolve the deployer object ID for Key Vault secret write access.' }
 
 if (-not $exists) {
     $null = Invoke-AzJson -Arguments @(
@@ -79,7 +86,8 @@ $deployment = Invoke-AzJson -Arguments @(
     '--resource-group', $ResourceGroupName, '--subscription', $subscription,
     '--template-file', $template, '--mode', 'Incremental',
     '--parameters', "location=$Location", "registryName=$RegistryName",
-    "environmentName=$EnvironmentName"
+    "environmentName=$EnvironmentName", "enableImports=$($EnableImports.IsPresent.ToString().ToLowerInvariant())",
+    "keyVaultWriterObjectId=$writer"
 )
 
 $deployment.properties.outputs | ConvertTo-Json -Depth 10

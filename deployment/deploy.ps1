@@ -14,6 +14,8 @@ param(
     [string] $ImageTag,
     [string] $FoundryAccountName = 'examinator-46954202',
     [string] $FoundryDeploymentName = 'exam-classifier',
+    [switch] $EnableImports,
+    [string] $ImportDeploymentName,
     [switch] $SkipBuild,
     [switch] $ProvisionFoundry,
     [switch] $Deploy
@@ -21,6 +23,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($EnableImports -and [string]::IsNullOrWhiteSpace($ImportDeploymentName)) {
+    throw 'Supply -ImportDeploymentName for an evaluated vision/structured-output model. No model is deployed automatically.'
+}
 
 function Invoke-AzJson {
     param([Parameter(Mandatory = $true)][string[]] $Arguments)
@@ -116,7 +121,7 @@ $appsScript = Join-Path $PSScriptRoot 'apps.ps1'
 & $identityScript -TenantId $TenantId -SubscriptionId $SubscriptionId
 
 & $infraScript -SubscriptionId $SubscriptionId -ResourceGroupName $ResourceGroupName `
-    -Location $Location -RegistryName $RegistryName -EnvironmentName $EnvironmentName -Deploy
+    -Location $Location -RegistryName $RegistryName -EnvironmentName $EnvironmentName -EnableImports:$EnableImports -Deploy
 $base = Invoke-AzJson -Arguments @(
     'deployment', 'group', 'show', '--name', 'examinator-base',
     '--resource-group', $ResourceGroupName, '--subscription', $subscription,
@@ -139,34 +144,11 @@ if ($ProvisionFoundry) {
         -PrincipalId ([guid]$base.apiIdentityPrincipalId.value) -PrincipalType ServicePrincipal -Deploy
 }
 else {
-    $foundry = Invoke-AzJson -Arguments @(
-        'cognitiveservices', 'account', 'show', '--name', $FoundryAccountName,
-        '--resource-group', $ResourceGroupName, '--subscription', $subscription
-    )
-    if ($foundry.kind -ne 'AIServices' -or $foundry.location -ne $Location) {
-        throw "Existing Foundry account must be AIServices in $Location. No account is imported or changed."
-    }
-    $expectedEndpoint = "https://$FoundryAccountName.cognitiveservices.azure.com/"
-    if ($foundry.properties.endpoint -ne $expectedEndpoint) {
-        throw 'Existing Foundry account endpoint differs from the configured runtime endpoint.'
-    }
-    $roleAssignments = @(Invoke-AzJson -Arguments @(
-        'role', 'assignment', 'list', '--scope', $foundry.id,
-        '--subscription', $subscription
-    ))
-    $foundryRole = @($roleAssignments | Where-Object {
-        $_.principalId -eq $base.apiIdentityPrincipalId.value -and
-        $_.roleDefinitionName -eq 'Cognitive Services OpenAI User'
-    })
-    if ($foundryRole.Count -eq 0) {
-        $null = Invoke-AzJson -Arguments @(
-            'role', 'assignment', 'create',
-            '--assignee-object-id', $base.apiIdentityPrincipalId.value,
-            '--assignee-principal-type', 'ServicePrincipal',
-            '--role', 'Cognitive Services OpenAI User',
-            '--scope', $foundry.id, '--subscription', $subscription
-        )
-    }
+    $ensureFoundryAccessScript = Join-Path $PSScriptRoot 'ensure-foundry-access.ps1'
+    & $ensureFoundryAccessScript -SubscriptionId $SubscriptionId `
+        -ResourceGroupName $ResourceGroupName -Location $Location `
+        -AccountName $FoundryAccountName `
+        -PrincipalId ([guid]$base.apiIdentityPrincipalId.value)
 }
 
 if (-not $SkipBuild) {
@@ -192,6 +174,22 @@ else {
     -ApiImage $apiImage -WebImage $webImage -AllowedUserIds $AllowedUserIds `
     -ResourceGroupName $ResourceGroupName -EnvironmentName $EnvironmentName `
     -RegistryName $RegistryName -FoundryAccountName $FoundryAccountName `
-    -FoundryDeploymentName $FoundryDeploymentName -Deploy
+    -FoundryDeploymentName $FoundryDeploymentName -EnableImports:$EnableImports `
+    -ImportDeploymentName $ImportDeploymentName -Deploy
+
+if ($EnableImports) {
+    $null = Invoke-AzJson -Arguments @(
+        'deployment', 'group', 'create', '--name', 'examinator-imports',
+        '--resource-group', $ResourceGroupName, '--subscription', $subscription,
+        '--template-file', (Join-Path $PSScriptRoot 'imports.bicep'),
+        '--parameters', "location=$Location", "environmentId=$($base.environmentId.value)",
+        "apiIdentityId=$($base.apiIdentityId.value)", "apiIdentityClientId=$($base.apiIdentityClientId.value)",
+        "registryServer=$($base.registryLoginServer.value)", "apiImage=$apiImage",
+        "storageName=$($base.storageName.value)", "blobEndpoint=$($base.blobEndpoint.value)",
+        "queueEndpoint=$($base.queueEndpoint.value)", "tableEndpoint=$($base.tableEndpoint.value)",
+        "foundryEndpoint=https://$FoundryAccountName.cognitiveservices.azure.com/",
+        "importDeployment=$ImportDeploymentName"
+    )
+}
 
 Write-Host 'Deployment complete. Allow Entra role grants and ACR pull permissions to propagate before first-use checks.'

@@ -6,3 +6,5 @@ Examenbundel_Compleet_HAVO_Biologie.pdf
 **/bin/
 **/obj/
 **/TestResults/
+scripts/local/settings.local.json
+.azure/*/

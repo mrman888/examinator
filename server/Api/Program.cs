@@ -6,6 +6,13 @@ using Examinator.Api;
 using Examinator.Api.Middleware;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.Http.Features;
+
+if (args.Contains("--import-worker") || args.Contains("--reconcile"))
+{
+    await ImportRegistration.RunWorkerAsync(args);
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 32_768);
@@ -31,6 +38,13 @@ builder.Services.AddHttpClient<IFoundryClient, FoundryClient>(client => client.T
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddOpenApi();
+builder.Services.AddImports(builder.Configuration);
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = PdfExtraction.MaximumFileBytes;
+    options.ValueLengthLimit = 256 * 1024;
+    options.MemoryBufferThreshold = 64 * 1024;
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -51,6 +65,14 @@ if (!localAnonymous && (!Guid.TryParse(app.Configuration["Azure:TenantId"], out 
     throw new InvalidOperationException("Configure Azure TenantId, ApiClientId and GatewayPrincipalId.");
 }
 app.UseExceptionHandler();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api") && context.Request.Path != "/api/test")
+        context.Response.Headers.CacheControl = "private, no-store";
+    if (context.Request.Path.StartsWithSegments("/api/imports") && context.Request.Method is "POST" or "PATCH")
+        ImportEndpoints.SetBodyLimit(context, context.Request.Path == "/api/imports" ? 46L * 1024 * 1024 : 4L * 1024 * 1024);
+    await next(context);
+});
 app.UseStatusCodePages();
 if (localAnonymous)
 {
@@ -70,6 +92,7 @@ app.UseRateLimiter();
 app.MapGet("/healthz", () => TypedResults.Ok(new { status = "ok" })).AllowAnonymous();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 app.MapTest(localAnonymous);
+app.MapImports(localAnonymous);
 app.Run();
 
 namespace Examinator.Api

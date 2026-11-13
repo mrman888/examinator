@@ -4,7 +4,10 @@
       <span class="brand-mark">E</span>
       <span><strong>Examinator</strong><small>Biologie · HAVO</small></span>
     </a>
-    <button class="topbar-status" type="button" [attr.aria-pressed]="showAiTest()" (click)="showAiTest.set(!showAiTest())">
+    <button class="topbar-status" type="button" [attr.aria-pressed]="showImport()" (click)="showImport.set(!showImport()); showAiTest.set(false)">
+      {{ showImport() ? 'Terug naar trainer' : 'Examens importeren' }}
+    </button>
+    <button class="topbar-status" type="button" [attr.aria-pressed]="showAiTest()" (click)="showAiTest.set(!showAiTest()); showImport.set(false)">
       {{ showAiTest() ? 'Terug naar examens' : 'AI testen' }}
     </button>
     <div class="year-picker" #yearPicker>
@@ -19,7 +22,7 @@
             <span>Alle examens</span>
             @if (activeExamFile() === null) { <span aria-hidden="true">✓</span> }
           </button>
-          @for (year of years; track year) {
+          @for (year of years(); track year) {
             <div class="year-menu-heading">{{ year }}</div>
             @for (exam of examsForYear(year); track exam.examFile) {
               <button class="year-option" type="button" [class.selected]="activeExamFile() === exam.examFile" [attr.aria-pressed]="activeExamFile() === exam.examFile" (click)="selectExam(exam)">
@@ -44,7 +47,14 @@
     />
 
     <section class="content-area">
-      @if (showAiTest()) {
+      @if (catalogError()) {
+        <div class="catalog-notice" role="status">De gebundelde examens blijven beschikbaar. {{ catalogError() }}
+          <button type="button" (click)="refreshCatalog()" [disabled]="catalogLoading()">Catalogus opnieuw laden</button>
+        </div>
+      }
+      @if (showImport()) {
+        <app-exam-import (published)="refreshCatalog()" />
+      } @else if (showAiTest()) {
         <app-ai-test />
       } @else if (selectedQuestion(); as question) {
         <app-exam-viewer
@@ -65,7 +75,7 @@
           <p class="breadcrumb">Biologie <span>/</span> {{ activeTopicTitle() }}</p>
           <h1>Geen vragen gevonden</h1>
           <p>In de geselecteerde examenjaren staan geen vragen die bij dit onderwerp horen.</p>
-          <p class="empty-hint">Kies een ander onderwerp of voeg meer passende examenvragen toe aan de map Data.</p>
+          <p class="empty-hint">Kies een ander onderwerp of importeer en publiceer een passend examen.</p>
         </div>
       }
     </section>

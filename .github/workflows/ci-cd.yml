@@ -95,6 +95,7 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+          IMPORT_DEPLOYMENT_NAME: ${{ vars.IMPORT_DEPLOYMENT_NAME }}
         run: |
           $ErrorActionPreference = 'Stop'
           $allowedUsers = @($env:ALLOWED_USER_IDS.Split(',') | ForEach-Object { [guid]$_.Trim() })
@@ -103,7 +104,9 @@ jobs:
             -SubscriptionId ([guid]$env:AZURE_SUBSCRIPTION_ID) `
             -TenantId ([guid]$env:AZURE_TENANT_ID) `
             -AllowedUserIds $allowedUsers `
-            -ImageTag $imageTag -Deploy -Confirm:$false
+            -ImageTag $imageTag `
+            -EnableImports:([bool](-not [string]::IsNullOrWhiteSpace($env:IMPORT_DEPLOYMENT_NAME))) `
+            -ImportDeploymentName $env:IMPORT_DEPLOYMENT_NAME -Deploy -Confirm:$false
       - name: Check public web health
         shell: pwsh
         env:

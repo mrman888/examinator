@@ -19,6 +19,8 @@ param(
     [string] $RegistryName,
     [string] $FoundryAccountName = 'examinator-46954202',
     [string] $FoundryDeploymentName = 'exam-classifier',
+    [switch] $EnableImports,
+    [string] $ImportDeploymentName,
     [switch] $Deploy
 )
 
@@ -49,6 +51,32 @@ function Invoke-AzJson {
     }
 }
 
+function Set-KeyVaultValue {
+    param(
+        [Parameter(Mandatory = $true)][string] $VaultName,
+        [Parameter(Mandatory = $true)][string] $SecretName,
+        [Parameter(Mandatory = $true)][string] $Value,
+        [Parameter(Mandatory = $true)][string] $Subscription
+    )
+    $secretFile = [IO.Path]::GetTempFileName()
+    $previousErrorPreference = $ErrorActionPreference
+    try {
+        [IO.File]::WriteAllText($secretFile, $Value, (New-Object Text.UTF8Encoding($false)))
+        $Value = $null
+        $ErrorActionPreference = 'Continue'
+        $null = & az keyvault secret set --vault-name $VaultName --name $SecretName --file $secretFile `
+            --subscription $Subscription --only-show-errors --output none 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to persist the EasyAuth credential in Key Vault. Check permissions and Entra/Key Vault state before retrying.'
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorPreference
+        $Value = $null
+        [IO.File]::Delete($secretFile)
+    }
+}
+
 function Set-HealthProbes {
     param(
         [Parameter(Mandatory = $true)] $App,
@@ -60,6 +88,7 @@ function Set-HealthProbes {
     if (-not $container) {
         throw "Container app '$($App.name)' has no container definition."
     }
+
     $probes = @(
         @{
             type = 'Startup'
@@ -124,6 +153,23 @@ function Test-EasyAuthEnabled {
         $auth.globalValidation.unauthenticatedClientAction -eq 'RedirectToLoginPage' -and
         $auth.globalValidation.excludedPaths -contains '/healthz' -and
         $auth.identityProviders.azureActiveDirectory.enabled -eq $true
+    )
+}
+
+function Set-AzdServiceTag {
+    param(
+        [Parameter(Mandatory = $true)] $App,
+        [Parameter(Mandatory = $true)][ValidateSet('api', 'web')][string] $Service,
+        [Parameter(Mandatory = $true)][string] $Subscription
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$App.id)) {
+        throw "Container App for AZD service '$Service' has no resource ID."
+    }
+    $null = Invoke-AzJson -Arguments @(
+        'tag', 'update', '--resource-id', [string]$App.id,
+        '--operation', 'Merge', '--tags', "azd-service-name=$Service",
+        '--subscription', $Subscription
     )
 }
 
@@ -198,6 +244,17 @@ $apiEnvironment = @(
     "Azure__ManagedIdentityClientId=$apiIdentityClientId",
     'ASPNETCORE_ENVIRONMENT=Production'
 )
+if ($EnableImports) {
+    if ([string]::IsNullOrWhiteSpace($ImportDeploymentName) -or -not $identityOutputs.blobEndpoint.value) {
+        throw 'Provision import storage and specify an evaluated ImportDeploymentName first.'
+    }
+    $apiEnvironment += @(
+        'Import__Enabled=true', "Foundry__ImportDeployment=$ImportDeploymentName",
+        "Storage__BlobEndpoint=$($identityOutputs.blobEndpoint.value)",
+        "Storage__QueueEndpoint=$($identityOutputs.queueEndpoint.value)",
+        "Storage__TableEndpoint=$($identityOutputs.tableEndpoint.value)"
+    )
+}
 
 $existingApps = @(Invoke-AzJson -Arguments @(
     'containerapp', 'list', '--resource-group', $ResourceGroupName,
@@ -318,7 +375,30 @@ $secrets = @(Invoke-AzJson -Arguments @(
     '--resource-group', $ResourceGroupName, '--subscription', $subscription
 ))
 $storedSecret = @($secrets | Where-Object { $_.name -eq $secretName })
-if ($storedSecret.Count -eq 0) {
+$vaultName = [string]$identityOutputs.keyVaultName.value
+$vaultUri = ([string]$identityOutputs.keyVaultUri.value).TrimEnd('/')
+if ([string]::IsNullOrWhiteSpace($vaultName) -or [string]::IsNullOrWhiteSpace($vaultUri)) {
+    throw 'Provision Key Vault before configuring EasyAuth.'
+}
+$vaultSecrets = @(Invoke-AzJson -Arguments @('keyvault', 'secret', 'list', '--vault-name', $vaultName))
+$vaultSecret = @($vaultSecrets | Where-Object { $_.name -eq $secretName })
+$credentialValue = $null
+if ($vaultSecret.Count -eq 0 -and $storedSecret.Count -gt 0) {
+    # Migrate the existing value without rotating Entra or interrupting EasyAuth.
+    $values = @(Invoke-AzJson -Arguments @(
+        'containerapp', 'secret', 'list', '--name', $webName, '--show-values',
+        '--resource-group', $ResourceGroupName, '--subscription', $subscription
+    ))
+    $value = @($values | Where-Object { $_.name -eq $secretName }) | Select-Object -First 1
+    if ($null -eq $value -or $null -eq $value.PSObject.Properties['value'] -or
+        [string]::IsNullOrWhiteSpace([string]$value.value)) {
+        throw 'The existing EasyAuth value cannot be migrated. Recover the secret in Key Vault explicitly; no automatic rotation.'
+    }
+    $credentialValue = [string]$value.value
+    $values = $null
+    $value = $null
+}
+elseif ($vaultSecret.Count -eq 0) {
     $credentials = @(Invoke-AzJson -Arguments @('ad', 'app', 'credential', 'list', '--id', $WebAppId))
     $orphaned = @($credentials | Where-Object { $_.displayName -eq 'Examinator ACA EasyAuth' })
     if ($orphaned.Count -gt 0) {
@@ -331,24 +411,19 @@ if ($storedSecret.Count -eq 0) {
     if ([string]::IsNullOrWhiteSpace([string]$credential.password)) {
         throw 'Entra did not return the new EasyAuth credential; refusing to continue.'
     }
-    # Never emit the credential or Azure CLI output. The secret is kept only in
-    # this process and written directly to the Container App secret store.
-    $secretArgument = "$secretName=$($credential.password)"
-    $previousErrorPreference = $ErrorActionPreference
+    $credentialValue = [string]$credential.password
+    $credential = $null
+}
+if ($null -ne $credentialValue) {
     try {
-        $ErrorActionPreference = 'Continue'
-        $null = & az containerapp secret set --name $webName --resource-group $ResourceGroupName `
-            --subscription $subscription --secrets $secretArgument --only-show-errors --output none 2>$null
-        $secretExitCode = $LASTEXITCODE
+        Set-KeyVaultValue -VaultName $vaultName -SecretName $secretName -Value $credentialValue -Subscription $subscription
     }
-    finally {
-        $ErrorActionPreference = $previousErrorPreference
-        $credential = $null
-        $secretArgument = $null
-    }
-    if ($secretExitCode -ne 0) {
-        throw 'Unable to persist the EasyAuth credential in ACA. The credential was not logged; check Entra credential/ACA secret state before retrying.'
-    }
+    finally { $credentialValue = $null }
+    $null = Invoke-AzJson -Arguments @(
+        'containerapp', 'secret', 'set', '--name', $webName, '--resource-group', $ResourceGroupName,
+        '--subscription', $subscription, '--secrets',
+        "$secretName=keyvaultref:$vaultUri/secrets/$secretName,identityref:$webIdentityId"
+    )
 }
 
 $authUrl = "https://management.azure.com$($webApp.id)/authConfigs/current?api-version=2024-03-01"
@@ -432,6 +507,13 @@ if ($webFqdn -ne $expectedWebFqdn) {
 }
 if (-not (Test-EasyAuthEnabled -AppName $webName -ResourceGroup $ResourceGroupName -Subscription $subscription)) {
     throw 'External web app does not have the required EasyAuth configuration; refusing to report success.'
+}
+
+foreach ($entry in @(
+    @{ App = $apiApp; Service = 'api' },
+    @{ App = $webApp; Service = 'web' }
+)) {
+    Set-AzdServiceTag -App $entry.App -Service $entry.Service -Subscription $subscription
 }
 
 [pscustomobject]@{

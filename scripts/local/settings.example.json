@@ -1,0 +1,10 @@
+{
+  "Import__Enabled": "false",
+  "Import__MaximumModelCalls": "64",
+  "Foundry__Endpoint": "https://YOUR-FOUNDRY-ACCOUNT.cognitiveservices.azure.com/",
+  "Foundry__Deployment": "YOUR-PROMPT-DEPLOYMENT",
+  "Foundry__ImportDeployment": "YOUR-VISION-IMPORT-DEPLOYMENT",
+  "Storage__BlobEndpoint": "https://YOUR-STORAGE-ACCOUNT.blob.core.windows.net/",
+  "Storage__QueueEndpoint": "https://YOUR-STORAGE-ACCOUNT.queue.core.windows.net/",
+  "Storage__TableEndpoint": "https://YOUR-STORAGE-ACCOUNT.table.core.windows.net/"
+}

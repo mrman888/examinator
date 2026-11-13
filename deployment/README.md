@@ -7,6 +7,51 @@ Infrastructure/application changes require `-Deploy`; image builds require
 `-Build` (or the orchestration script's `-Deploy`). Without those switches,
 the orchestration script performs local and read-only preflight checks.
 
+## Local AZD deployment
+
+`azure.yaml` is the AZD entry point for the existing Development environment.
+It reuses the current `examinator` resource group, Container Apps environment,
+ACR, managed identities, Foundry account and model deployment. The Bicep entry
+point composes the existing `main.bicep` and `imports.bicep`; it does not create
+a second Container Apps environment or Foundry model. AZD passes through the
+images already running in the API and Web apps; it does not build or retag them.
+The post-provision hook reuses the existing identity/EasyAuth setup and
+idempotently ensures the API identity has the `Cognitive Services OpenAI User`
+role on the existing Foundry account, without changing its model deployment.
+This keeps deployment on the existing ACR build path, which disables log
+streaming and waits for each image build to complete. Local Docker is not needed.
+AZD's PowerShell hooks require PowerShell 7 (`pwsh`).
+
+Use the already-confirmed subscription and Sweden Central location:
+
+```powershell
+azd env new development --subscription '<confirmed-subscription-id>' `
+    --location swedencentral --no-prompt
+azd env set AZURE_RESOURCE_GROUP examinator
+azd env set KEY_VAULT_WRITER_OBJECT_ID '<deployer-object-id>'
+azd up
+```
+
+`azd up` provisions import storage and jobs, then its post-provision hook reuses
+the existing Entra, Foundry-access, and EasyAuth setup scripts. The API
+service's post-deploy hook updates both jobs to the API image just deployed.
+Set `ALLOWED_USER_IDS`
+in the local AZD environment only when additional users must be allowlisted;
+the hook preserves existing IDs and includes the signed-in user when available.
+The hook also merges AZD's `azd-service-name` tags onto the apps so AZD can
+distinguish them from same-named managed identities. The AZD environment
+directory is ignored by Git and must not be committed.
+
+For an application-code update, build unique ACR image tags with
+`deployment/build.ps1 -Build`, then deploy those remote images with
+`azd deploy api --from-package <api-image>` and
+`azd deploy web --from-package <web-image>`. Run the API deployment first; its
+post-deploy hook reconciles both import jobs to the new API image.
+
+The existing GitHub Actions manual deployment remains on `deploy.ps1`; avoid
+running it concurrently with AZD because both target the same Development
+resources.
+
 ## Deployed development instance
 
 Website: <https://examinator-web.mangopond-8c0feacb.swedencentral.azurecontainerapps.io/>
@@ -39,6 +84,11 @@ EasyAuth's hybrid sign-in flow requires ID-token issuance on its web registratio
 the application deployment script configures this as well as the callback URL.
 
 ## GitHub Actions CI and manual deployment
+
+To enable imports on manual runs, set the `development` environment variable
+`IMPORT_DEPLOYMENT_NAME` to an evaluated vision/strict-schema Foundry deployment.
+Keep it configured on subsequent deployments. This does not deploy or change
+the model used by **AI testen**.
 
 `.github/workflows/ci-cd.yml` runs the Angular build and tests and the .NET
 tests on pull requests targeting `main` and on pushes to `main`. A manually
@@ -101,6 +151,69 @@ only the `main` branch. `ALLOWED_USER_IDS` must preserve the complete approved
 gateway user list when changing deployment configuration.
 
 ## Architecture
+
+### Exam import storage and jobs
+
+Enable import infrastructure explicitly on **every** deployment:
+
+```powershell
+.\deployment\deploy.ps1 -SubscriptionId $subscription -TenantId $tenant `
+    -EnableImports -ImportDeploymentName 'your-evaluated-vision-deployment' -Deploy
+```
+
+The scripts create Standard GPv2 **LRS** storage with authenticated public HTTPS
+endpoints. Anonymous Blob access and Shared Key authorization are disabled.
+Containers `exam-documents`, `exam-imports` and `exam-results` are not public.
+Tables `ImportJobs`/`ExamCatalog` index recent jobs, subjects, sittings and document
+IDs; dispatch and poison queues contain only opaque import IDs. Active files
+stay Hot for immediate preview. Blob versioning/7-day delete recovery are enabled;
+only historical `exam-imports/` versions expire after seven days. Original PDFs
+and current publication manifests are never automatically deleted or archived.
+
+The API identity has Blob/Queue/Table Data Contributor roles and its existing
+Foundry permission; the same identity runs the worker and reconciler. The web
+identity has no Storage data role. Authenticated document traffic goes through
+Web → internal Api, including Range requests. There are **no new VNets, Private
+Endpoints, private DNS zones, NAT gateways or firewalls**.
+
+`imports.bicep` provisions a Consumption event job (one concurrent execution,
+zero automatic replica retries, four-hour timeout) and a reconciler every five
+minutes. KEDA uses managed identity, not a connection string. The worker renews
+queue visibility and its lease, checkpoints paid calls, and quarantines invalid/
+repeatedly interrupted dispatch. A failed model call is visible in the draft;
+retry is an explicit user action with possible additional cost. The 64-call
+ceiling is not a monetary cap. Set Azure cost alerts/budgets separately.
+
+Job resources use a stable API instead of the discovered AVM job module's
+preview resource API. No model upgrade, Azure deployment or paid quality test
+is performed by merely applying these code changes.
+
+### Key Vault and EasyAuth migration
+
+Base provisioning now creates a Standard, RBAC-enabled Key Vault with public
+authenticated HTTPS, soft deletion and purge protection. The deployment
+identity gets Secrets Officer; the web identity gets Secrets User. Storage,
+queue scaling, registry pulls and Foundry need **no stored credentials**.
+
+The unavoidable EasyAuth client secret is written to Key Vault through a
+temporary UTF-8 file, never a command-line value, and removed from that file in
+`finally`, including on failure. ACA stores only a Key Vault/managed-identity
+reference. On upgrade, the existing ACA value is copied to Key Vault before its
+reference is switched; Entra is not rotated automatically. Missing/ambiguous
+existing credentials stop deployment. Existing secret values never enter logs.
+An already-populated Vault value must correspond to the current Entra credential;
+verify this before migrating an existing deployment. Allow RBAC to propagate
+and retry a failed secret migration after inspecting the current state.
+
+Run secret-write/cleanup checks without Azure:
+
+```powershell
+powershell -NoProfile -File .\deployment\tests\imports.tests.ps1
+```
+
+Deployment permissions and Key Vault references must be smoke-tested privately
+before enabling imports for regular use. Health checks alone do not verify
+Foundry processing, import approval or EasyAuth credential validity.
 
 - Resource group: `examinator`; region is constrained to **Sweden Central**
   (`swedencentral`).
@@ -278,15 +391,15 @@ these persistent names:
 
 The resolver uses the API identifier URI and the application names. It fails
 on ambiguous duplicate registrations instead of selecting one. The web app
-registration gets a client secret only when the ACA secret is absent. That
-secret is written directly into the Container App secret store and is never
-printed by the script. Reruns reuse the ACA secret and do not generate a
+registration gets a client secret only when neither the Key Vault secret nor
+a reusable ACA value exists. The value is stored in Key Vault; ACA stores an
+identity-authenticated reference, not the value. Reruns reuse it and do not generate a
 replacement. If credential creation succeeds but secret persistence fails,
 the next run fails closed rather than rotating blindly. An administrator
-must reconcile that named Entra credential and ACA secret securely before
+must reconcile that named Entra credential and Key Vault secret securely before
 retrying. Plan an explicit, coordinated secret rotation before its two-year
 expiry; do not enable PowerShell transcript/debug logging during credential
-provisioning and do not put secrets in command history, files, tickets, or
+provisioning and do not put secrets in command history, persistent files, tickets, or
 logs.
 
 Application-registration provisioning is fully implemented in

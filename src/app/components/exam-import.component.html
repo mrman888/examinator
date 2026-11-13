@@ -1,0 +1,160 @@
+<section class="import-panel" aria-labelledby="import-heading">
+  <header class="actions">
+    <div><h1 id="import-heading">Importbeheer</h1><p>Biologie · HAVO. Documenten blijven beschermd; alleen goedgekeurde examens komen in de trainer.</p></div>
+    <button type="button" (click)="openUpload()" [disabled]="busy()">Examen importeren</button>
+  </header>
+  <div aria-live="polite">
+    @if (busy()) { <p role="status">Verzoek verwerken...</p> }
+    @if (error()) { <p class="error" role="alert">{{ error() }}</p> }
+    @if (notice()) { <p class="notice" role="status">{{ notice() }}</p> }
+  </div>
+  <div class="import-workspace">
+    <nav aria-label="Opgeslagen imports" class="import-list">
+      <button type="button" (click)="refreshList()" [disabled]="busy()">Lijst vernieuwen</button>
+      @for (record of records(); track record.id) {
+        <button type="button" class="import-item" [class.active]="selected()?.id === record.id"
+          [disabled]="busy()" (click)="select(record)">
+          @if (record.metadata.year === 0) {
+            <strong>Biologie · jaar en tijdvak nog niet vastgesteld</strong>
+          } @else {
+            <strong>Biologie {{ record.metadata.year }} · tijdvak {{ record.metadata.timevak }}</strong>
+          }
+          <span>{{ stateLabel(record) }}</span>
+          <small>{{ record.createdAt.slice(0, 10) }} · {{ record.id.slice(0, 8) }}</small>
+        </button>
+      } @empty { <p>Nog geen imports geladen.</p> }
+    </nav>
+    <div class="review">
+      @if (selected(); as record) {
+        <div class="actions">
+          @if (record.metadata.year === 0) {
+            <h2>Jaar en tijdvak nog niet vastgesteld: {{ stateLabel(record) }}</h2>
+          } @else {
+            <h2>{{ record.metadata.year }} · tijdvak {{ record.metadata.timevak }}: {{ stateLabel(record) }}</h2>
+          }
+          <button type="button" (click)="refreshSelected()" [disabled]="busy() || dirty()">Status vernieuwen</button>
+        </div>
+        @if (record.metadata.chapterTitle || record.metadata.chapterNumber) {
+          <p>Hoofdstuk {{ record.metadata.chapterNumber }}: {{ record.metadata.chapterTitle }} (metadata)</p>
+        }
+        @if (record.error) { <p class="error" role="alert">{{ record.error }}</p> }
+        @for (warning of record.warnings; track $index) { <p class="warning">{{ warning }}</p> }
+        @if (record.state === 'awaitingDefinitions') {
+          <h3>Controleer de voorgestelde onderwerpen</h3>
+          <p>Hoofdstukken en paragrafen zijn metadata. Onderwerpen kunnen over meerdere hoofdstukken heen worden gebruikt.</p>
+          @if (record.contextDocumentId; as contextDocumentId) {
+            <details><summary>Aangeleverde hoofdstukscreenshot</summary>
+              <img class="context-image" [src]="documentUrl(contextDocumentId)" alt="Aangeleverde paragrafen of leerdoelen" />
+            </details>
+          }
+          @if (record.contextText) { <p class="context-text">{{ record.contextText }}</p> }
+          <app-topic-editor [topics]="draftTopics()" [disabled]="busy()" (topicsChanged)="changeDraftTopics($event)" />
+          <button type="button" (click)="confirmDefinitions()" [disabled]="busy()">Onderwerpen bevestigen en verwerken</button>
+        } @else if (record.state === 'review' || record.state === 'published') {
+          <details>
+            <summary>Onderwerpdefinities en hoofdstukmetadata</summary>
+            <app-topic-editor [topics]="draftTopics()" [disabled]="busy() || record.state === 'published'"
+              (topicsChanged)="changeDraftTopics($event)" />
+          </details>
+          <label>Vraag bekijken
+            <select #questionSelect [value]="activeQuestion()?.id ?? ''" (change)="selectedQuestionId.set(questionSelect.value)">
+              @for (question of draftQuestions(); track question.id) {
+                <option [value]="question.id">Vraag {{ question.number }}: {{ question.title }}{{ question.needsReview ? ' (controle nodig)' : '' }}</option>
+              }
+            </select>
+          </label>
+          @if (activeQuestion(); as question) {
+            <fieldset [disabled]="busy() || record.state === 'published'">
+              <legend>Vraag {{ question.number }}</legend>
+              <label>Korte titel <input #questionTitle [value]="question.title" maxlength="200"
+                (input)="editQuestion(question.id, 'title', questionTitle.value)" /></label>
+              <div class="page-fields">
+                <label>Examen vanaf PDF-pagina <input #examPage type="number" min="1" [value]="question.examPage"
+                  (change)="editQuestion(question.id, 'examPage', examPage.value)" /></label>
+                <label>Examen t/m PDF-pagina <input #examEnd type="number" min="1" [value]="question.examEndPage"
+                  (change)="editQuestion(question.id, 'examEndPage', examEnd.value)" /></label>
+                <label>Antwoord vanaf PDF-pagina <input #answerPage type="number" min="1" [value]="question.answerPage ?? ''"
+                  (change)="editQuestion(question.id, 'answerPage', answerPage.value)" /></label>
+                <label>Antwoord t/m PDF-pagina <input #answerEnd type="number" min="1" [value]="question.answerEndPage ?? ''"
+                  (change)="editQuestion(question.id, 'answerEndPage', answerEnd.value)" /></label>
+              </div>
+              <p>Selecteer alleen onderwerpen die voor deze vraag nodig zijn. Geen passend onderwerp is ook geldig.</p>
+              <div class="tags">
+                @for (topic of draftTopics(); track topic.id) {
+                  <label><input #tag type="checkbox" [checked]="question.topicIds.includes(topic.id)"
+                    (change)="toggleTopic(question.id, topic.id, tag.checked)" />{{ topic.title }}</label>
+                }
+              </div>
+              @for (reason of question.reasons; track $index) { <p class="reason">Oorspronkelijke AI-onderbouwing: {{ reason }}</p> }
+              @for (warning of question.warnings; track $index) { <p class="warning">{{ warning }}</p> }
+              <label class="review-check"><input #reviewed type="checkbox" [checked]="!question.needsReview"
+                (change)="markReviewed(question.id, reviewed.checked)" />Ik heb de vraag, onderwerpen en antwoordkoppeling gecontroleerd.</label>
+            </fieldset>
+            <div class="previews">
+              <app-import-pdf-preview [url]="documentUrl(record.examDocumentId)" [page]="question.examPage" label="Examen" />
+              @if (question.answerPage; as answerPage) {
+                <app-import-pdf-preview [url]="documentUrl(record.answerDocumentId)" [page]="answerPage" label="Antwoorden" />
+              } @else { <p class="warning">Nog geen antwoordpagina gekoppeld. Controleer het correctievoorschrift.</p> }
+            </div>
+          } @else { <p class="warning">Geen vragen gevonden. Dit concept kan niet worden gepubliceerd.</p> }
+          @if (record.state === 'review') {
+            <div class="actions sticky">
+              <button type="button" (click)="saveDraft()" [disabled]="busy() || !dirty()">Concept opslaan</button>
+              <button type="button" (click)="resetDraft()" [disabled]="busy() || !dirty()">Wijzigingen herstellen</button>
+              <button type="button" (click)="action('publish')" [disabled]="busy() || !canPublish()">Goedkeuren en publiceren</button>
+            </div>
+            @if (dirty()) { <p>Je wijzigingen zijn nog niet opgeslagen.</p> }
+            @if (!canPublish() && !dirty()) { <p>Controleer alle vragen en ontbrekende antwoordkoppelingen voordat je publiceert.</p> }
+          }
+        } @else if (record.state !== 'failed' && record.state !== 'cancelled') {
+          <p role="status">De verwerking loopt op de achtergrond. Je kunt deze pagina verlaten en later terugkomen.</p>
+        }
+        <div class="actions">
+          @if (record.state === 'failed') {
+            <p>Opnieuw verwerken kan extra Foundry-kosten veroorzaken.</p>
+            <button type="button" (click)="action('retry')" [disabled]="busy()">Opnieuw verwerken</button>
+          }
+          @if (record.state !== 'published' && record.state !== 'cancelled') {
+            <button type="button" (click)="action('cancel')" [disabled]="busy()">Import annuleren</button>
+          }
+        </div>
+      } @else { <p>Selecteer een import of upload een nieuw examen.</p> }
+    </div>
+  </div>
+</section>
+
+<dialog #uploadDialog aria-labelledby="upload-heading" (cancel)="preventBusyClose($event)">
+  <form #uploadForm (submit)="upload($event)">
+    <div class="actions"><h2 id="upload-heading">Examen importeren</h2>
+      <button type="button" (click)="closeUpload()" [disabled]="busy()" aria-label="Importvenster sluiten">Sluiten</button></div>
+    <p>Vak: <strong>Biologie</strong> · Niveau: <strong>HAVO</strong>. Andere vakken worden later beschikbaar.</p>
+    <p>Jaar en tijdvak worden automatisch uit het examen en correctievoorschrift gehaald.</p>
+    <label>Examen PDF (maximaal 20 MiB)<input type="file" name="exam" accept="application/pdf,.pdf" required [disabled]="busy()" /></label>
+    <label>Antwoorden / correctievoorschrift PDF (maximaal 20 MiB)<input type="file" name="answers" accept="application/pdf,.pdf" required [disabled]="busy()" /></label>
+    <details>
+      <summary>Hoofdstuk en aanvullende leerinhoud (optioneel)</summary>
+      <label>Hoofdstuknummer <input #chapterNumberInput [value]="chapterNumber()" maxlength="40" [disabled]="busy()"
+        (input)="chapterNumber.set(chapterNumberInput.value)" /></label>
+      <label>Hoofdstuktitel <input #chapterTitleInput [value]="chapterTitle()" maxlength="160" [disabled]="busy()"
+        (input)="chapterTitle.set(chapterTitleInput.value)" /></label>
+      <label>Screenshot van paragrafen / leerdoelen (PNG of JPEG, maximaal 5 MiB)
+        <input type="file" name="context" accept="image/png,image/jpeg" [disabled]="busy()" /></label>
+      <label>Leerdoelen of aanvullende uitleg <textarea #contextInput rows="4" maxlength="12000" [value]="contextText()"
+        [disabled]="busy()" (input)="contextText.set(contextInput.value)"></textarea></label>
+      <p>Het model stelt definities voor die jij eerst controleert. Hoofdstukken beperken de tagging niet. Screenshots worden niet gepubliceerd.</p>
+    </details>
+    <h3>Onderwerpen waarop vragen worden beoordeeld</h3>
+    <p>Trefwoorden zijn aanwijzingen, geen automatische matches. Verwijder onderwerpen die je niet wilt gebruiken.</p>
+    <label>Bestaand onderwerp toevoegen
+      <select #existingTopic [disabled]="busy()" (change)="addExistingTopic(existingTopic.value); existingTopic.value = ''">
+        <option value="">Kies een onderwerp</option>
+        @for (topic of availableTopics(); track topic.id) { <option [value]="topic.id">{{ topic.title }}</option> }
+      </select>
+    </label>
+    <app-topic-editor [topics]="uploadTopics()" [disabled]="busy()" (topicsChanged)="uploadTopics.set($event)" />
+    <label class="review-check"><input type="checkbox" name="permission" required [disabled]="busy()" />
+      Ik mag deze documenten laten verwerken en opslaan voor deze afgeschermde trainer.</label>
+    @if (error()) { <p class="error" role="alert">{{ error() }}</p> }
+    <div class="actions"><button type="submit" [disabled]="busy()">{{ busy() ? 'Documenten opslaan...' : 'Uploaden en verwerken' }}</button></div>
+  </form>
+</dialog>

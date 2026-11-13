@@ -20,7 +20,8 @@
                 { "glob": "2025_havo_tijdvak*.pdf", "input": "Data", "output": "Data" },
                 { "glob": "2025_tijdvlak2_antwoorden.pdf", "input": "Data", "output": "Data" },
                 { "glob": "2024_havo_tijdvak2_*.pdf", "input": "Data", "output": "Data" },
-                { "glob": "pdf.worker.min.mjs", "input": "node_modules/pdfjs-dist/build", "output": "assets" }
+                { "glob": "pdf.worker.min.mjs", "input": "node_modules/pdfjs-dist/build", "output": "assets" },
+                { "glob": "*", "input": "node_modules/pdfjs-dist/wasm", "output": "assets/pdf-wasm" }
               ]
           }
         },

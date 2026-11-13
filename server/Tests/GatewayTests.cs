@@ -115,6 +115,37 @@ public sealed class GatewayTests
         Assert.Equal(10, app.Backend.Calls);
     }
 
+    [Fact]
+    public async Task ImportRoutesFailClosedAndMutationsRequireCsrf()
+    {
+        await using var app = new GatewayFactory();
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Forbidden, (await anonymous.GetAsync("/api/subjects")).StatusCode);
+        using var client = app.ApprovedClient();
+        Assert.Contains("biology", await client.GetStringAsync("/api/subjects"));
+        foreach (var path in new[] { "/api/catalog?subjectId=biology", "/api/imports", "/api/imports/id", "/api/documents/id" })
+        {
+            using var response = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Contains("unavailable", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        var actions = new[] { "/api/imports", "/api/imports/id/confirm-definitions",
+            "/api/imports/id/publish", "/api/imports/id/cancel", "/api/imports/id/retry" };
+        foreach (var path in actions)
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync(path, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await client.PatchAsync("/api/imports/id/draft", JsonContent.Create(new { }))).StatusCode);
+
+        client.DefaultRequestHeaders.Add("Origin", "https://website.example");
+        client.DefaultRequestHeaders.Add("X-Examinator-Request", "1");
+        foreach (var path in actions)
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsync(path, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable,
+            (await client.PatchAsync("/api/imports/id/draft", JsonContent.Create(new { }))).StatusCode);
+        Assert.Equal(0, app.Backend.Calls);
+    }
+
     private static string Principal(string user) => Convert.ToBase64String(Encoding.UTF8.GetBytes(
         JsonSerializer.Serialize(new
         {
@@ -143,6 +174,8 @@ public sealed class GatewayTests
             {
                 services.RemoveAll<IGatewayClient>();
                 services.AddSingleton<IGatewayClient>(Backend);
+                services.RemoveAll<IImportGateway>();
+                services.AddSingleton<IImportGateway, FakeImportGateway>();
             });
         }
 
@@ -161,6 +194,17 @@ public sealed class GatewayTests
         {
             Calls++;
             return Task.FromResult<IResult>(TypedResults.Ok(new GatewayPromptResponse("Gateway reply")));
+        }
+    }
+
+    private sealed class FakeImportGateway : IImportGateway
+    {
+        public async Task ForwardAsync(HttpContext context, CancellationToken cancellationToken)
+        {
+            if (context.Request.Path == "/api/subjects")
+                await TypedResults.Ok(new[] { new { id = "biology", title = "Biologie" } }).ExecuteAsync(context);
+            else
+                await TypedResults.Problem(statusCode: 503, title: "Exam import is unavailable.").ExecuteAsync(context);
         }
     }
 }

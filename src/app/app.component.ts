@@ -1,13 +1,15 @@
-import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, inject, linkedSignal, signal, viewChild } from '@angular/core';
 import { AnswerDrawerComponent } from './components/answer-drawer.component';
 import { AiTestComponent } from './components/ai-test.component';
 import { ExamViewerComponent } from './components/exam-viewer.component';
 import { QuestionSidebarComponent } from './components/question-sidebar.component';
 import { ExamDataService, type ExamQuestion, type ExamSitting } from './services/exam-data.service';
+import { ExamImportComponent } from './components/exam-import.component';
 
 @Component({
   selector: 'app-root',
-  imports: [QuestionSidebarComponent, ExamViewerComponent, AnswerDrawerComponent, AiTestComponent],
+  imports: [QuestionSidebarComponent, ExamViewerComponent, AnswerDrawerComponent, AiTestComponent, ExamImportComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './app.component.html',
   host: {
     '(document:click)': 'closeYearMenuOnOutsideClick($event)',
@@ -22,12 +24,26 @@ export class AppComponent {
   readonly years = this.examData.years;
   readonly exams = this.examData.exams;
 
-  readonly activeTopic = signal(this.topics[0].id);
-  readonly activeExamFile = signal<string | null>(null);
+  readonly activeTopic = signal(this.topics()[0].id);
+  readonly activeExamFile = linkedSignal<ExamSitting[], string | null>({
+    source: this.exams,
+    computation: (exams, previous) => {
+      const selectedFile = previous?.value;
+      if (!selectedFile) return null;
+      if (exams.some((exam) => exam.examFile === selectedFile)) return selectedFile;
+      const oldExam = previous.source.find((exam) => exam.examFile === selectedFile);
+      if (!oldExam) return null;
+      return exams.find((exam) => exam.year === oldExam.year && exam.timevak === oldExam.timevak)?.examFile ?? null;
+    },
+  });
   readonly questionIndex = signal(0);
   readonly showAnswer = signal(false);
   readonly yearMenuOpen = signal(false);
   readonly showAiTest = signal(false);
+  readonly showImport = signal(false);
+  readonly catalogError = this.examData.catalogError;
+  readonly catalogLoading = this.examData.catalogLoading;
+  private catalogRequest?: AbortController;
 
   readonly filteredQuestions = computed(() =>
     this.examData.getQuestionsForTopic(this.activeTopic(), this.activeExamFile()));
@@ -35,27 +51,38 @@ export class AppComponent {
   readonly selectedQuestion = computed<ExamQuestion | undefined>(() => this.filteredQuestions()[this.questionIndex()]);
 
   readonly activeTopicTitle = computed(() =>
-    this.topics.find((topic) => topic.id === this.activeTopic())?.title ?? '');
+    this.topics().find((topic) => topic.id === this.activeTopic())?.title ?? '');
 
   readonly examMenuLabel = computed(() => {
-    const selectedExam = this.exams.find((exam) => exam.examFile === this.activeExamFile());
+    const selectedExam = this.exams().find((exam) => exam.examFile === this.activeExamFile());
     if (selectedExam) return `HAVO ${selectedExam.year} · tijdvak ${selectedExam.timevak}`;
 
-    const firstYear = Math.min(...this.years);
-    const lastYear = Math.max(...this.years);
+    const firstYear = Math.min(...this.years());
+    const lastYear = Math.max(...this.years());
     return `Examenjaren ${firstYear}-${lastYear}`;
   });
+
+  constructor() {
+    inject(DestroyRef).onDestroy(() => this.catalogRequest?.abort());
+    this.refreshCatalog();
+  }
+
+  refreshCatalog(): void {
+    this.catalogRequest?.abort();
+    this.catalogRequest = new AbortController();
+    void this.examData.refreshCatalog(this.catalogRequest.signal);
+  }
 
   selectTopic(topicId: string): void {
     this.activeTopic.set(topicId);
     this.questionIndex.set(0);
-    this.showAnswer.set(false);
+    this.returnToTrainer();
   }
 
   selectExam(exam: ExamSitting | null): void {
     this.activeExamFile.set(exam?.examFile ?? null);
     this.questionIndex.set(0);
-    this.showAnswer.set(false);
+    this.returnToTrainer();
     this.yearMenuOpen.set(false);
   }
 
@@ -79,6 +106,12 @@ export class AppComponent {
 
   selectQuestion(question: ExamQuestion): void {
     this.questionIndex.set(this.filteredQuestions().findIndex((item) => item.id === question.id));
+    this.returnToTrainer();
+  }
+
+  private returnToTrainer(): void {
+    this.showImport.set(false);
+    this.showAiTest.set(false);
     this.showAnswer.set(false);
   }
 

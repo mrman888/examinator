@@ -1,0 +1,102 @@
+@baseUrl = http://localhost:5182
+@gatewayJwt = replace-with-a-short-lived-gateway-token
+@importId = replace-with-the-returned-import-id
+@documentId = replace-with-the-returned-document-id
+@revision = replace-with-the-returned-revision
+
+### Production calls require a valid gateway JWT; never save real tokens here.
+GET {{baseUrl}}/api/subjects
+Authorization: Bearer {{gatewayJwt}}
+
+### Upload private source files. Replace paths and use a matching sitting.
+POST {{baseUrl}}/api/imports
+Authorization: Bearer {{gatewayJwt}}
+Content-Type: multipart/form-data; boundary=import-boundary
+
+--import-boundary
+Content-Disposition: form-data; name="metadata"
+
+{"subjectId":"biology","level":"havo","year":2025,"timevak":1,"chapterNumber":"2","chapterTitle":"Cellen","topics":[{"id":"biology-cells","title":"Cellen","description":"Celstructuur en de functie van celonderdelen","keywords":["cel"],"exclusions":[],"aliases":[],"chapterNumber":"2","paragraphNumber":"2.1"}]}
+--import-boundary
+Content-Disposition: form-data; name="exam"; filename="exam.pdf"
+Content-Type: application/pdf
+
+< C:\private\exam.pdf
+--import-boundary
+Content-Disposition: form-data; name="answers"; filename="answers.pdf"
+Content-Type: application/pdf
+
+< C:\private\answers.pdf
+--import-boundary--
+
+### Durable progress list
+GET {{baseUrl}}/api/imports
+Authorization: Bearer {{gatewayJwt}}
+
+### Review detail
+GET {{baseUrl}}/api/imports/{{importId}}
+Authorization: Bearer {{gatewayJwt}}
+
+### Confirm screenshot-derived definitions (only awaitingDefinitions)
+POST {{baseUrl}}/api/imports/{{importId}}/confirm-definitions
+Authorization: Bearer {{gatewayJwt}}
+Content-Type: application/json
+
+{"revision":"{{revision}}","topics":[{"id":"biology-cells","title":"Cellen","description":"Celstructuur en de functie van celonderdelen","keywords":["cel"],"exclusions":[],"aliases":[],"chapterNumber":"2","paragraphNumber":"2.1"}]}
+
+### Save the COMPLETE returned topic/question arrays, with checked page links
+PATCH {{baseUrl}}/api/imports/{{importId}}/draft
+Authorization: Bearer {{gatewayJwt}}
+Content-Type: application/json
+
+{"revision":"{{revision}}","topics":[],"questions":[]}
+
+### Publish only a saved, fully checked draft
+POST {{baseUrl}}/api/imports/{{importId}}/publish
+Authorization: Bearer {{gatewayJwt}}
+Content-Type: application/json
+
+{"revision":"{{revision}}"}
+
+### Cancellation
+POST {{baseUrl}}/api/imports/{{importId}}/cancel
+Authorization: Bearer {{gatewayJwt}}
+Content-Type: application/json
+
+{"revision":"{{revision}}"}
+
+### Explicit, cost-aware retry of a failed import
+POST {{baseUrl}}/api/imports/{{importId}}/retry
+Authorization: Bearer {{gatewayJwt}}
+Content-Type: application/json
+
+{"revision":"{{revision}}"}
+
+### Protected partial PDF delivery
+GET {{baseUrl}}/api/documents/{{documentId}}
+Authorization: Bearer {{gatewayJwt}}
+Range: bytes=0-1023
+
+### Published trainer catalog
+GET {{baseUrl}}/api/catalog?subjectId=biology
+Authorization: Bearer {{gatewayJwt}}
+
+### Subject/sitting lookup
+GET {{baseUrl}}/api/exams?subjectId=biology&level=havo&year=2025&timevak=1
+Authorization: Bearer {{gatewayJwt}}
+
+### Independent topic search
+GET {{baseUrl}}/api/topics?subjectId=biology&search=cel
+Authorization: Bearer {{gatewayJwt}}
+
+### Questions across exams/chapters
+GET {{baseUrl}}/api/questions?subjectId=biology&topicId=biology-cells
+Authorization: Bearer {{gatewayJwt}}
+
+### Verified pair metadata
+GET {{baseUrl}}/api/exams/{{importId}}/documents
+Authorization: Bearer {{gatewayJwt}}
+
+### Unknown ID returns 404, not a storage/provider error
+GET {{baseUrl}}/api/imports/does-not-exist
+Authorization: Bearer {{gatewayJwt}}
