@@ -51,17 +51,24 @@ $account = Invoke-AzJson -Arguments @(
     'cognitiveservices', 'account', 'show', '--name', $AccountName,
     '--resource-group', $ResourceGroupName, '--subscription', $subscription
 )
-$usage = @(Invoke-AzJson -Arguments @(
-    'cognitiveservices', 'usage', 'list', '--location', [string]$account.location, '--subscription', $subscription
-))
+# Reading quota needs subscription-scope access, which a resource-group-scoped deploy identity lacks.
+# The quota check is then skipped; Azure still rejects the capacity change if quota is insufficient.
 $usageName = "OpenAI.$($deployment.sku.name).$($deployment.properties.model.name)"
-$quota = @($usage | Where-Object { $_.name.value -eq $usageName }) | Select-Object -First 1
-if ($null -eq $quota) {
-    throw "Unable to verify Foundry quota $usageName. Raise the capacity of $DeploymentName to $MinimumCapacity manually."
+$quota = $null
+try {
+    $usage = @(Invoke-AzJson -Arguments @(
+        'cognitiveservices', 'usage', 'list', '--location', [string]$account.location, '--subscription', $subscription
+    ))
+    $quota = @($usage | Where-Object { $null -ne $_ -and $_.name.value -eq $usageName }) | Select-Object -First 1
 }
-$remaining = [double]$quota.limit - [double]$quota.currentValue
-if (($MinimumCapacity - $current) -gt $remaining) {
-    throw "Insufficient Foundry quota for $usageName`: need $($MinimumCapacity - $current) more units; $remaining available."
+catch {
+    $quota = $null
+}
+if ($null -eq $quota) {
+    Write-Warning "Unable to read Foundry quota $usageName; Azure validates the quota when the capacity is changed."
+}
+elseif (($MinimumCapacity - $current) -gt ([double]$quota.limit - [double]$quota.currentValue)) {
+    throw "Insufficient Foundry quota for $usageName`: need $($MinimumCapacity - $current) more units; $([double]$quota.limit - [double]$quota.currentValue) available."
 }
 if (-not $PSCmdlet.ShouldProcess("$AccountName/$DeploymentName", "Raise capacity from $current to $MinimumCapacity")) {
     return

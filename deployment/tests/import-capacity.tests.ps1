@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $path = (Resolve-Path (Join-Path $PSScriptRoot '..\ensure-import-capacity.ps1')).Path
-$state = @{ Capacity = 10; QuotaUsed = 10; QuotaLimit = 300; Patches = New-Object System.Collections.ArrayList }
+$state = @{ Capacity = 10; QuotaUsed = 10; QuotaLimit = 300; QuotaVisible = $true; Patches = New-Object System.Collections.ArrayList }
 
 function Assert-True {
     param([bool] $Condition, [string] $Message)
@@ -25,6 +25,7 @@ function az {
         return '{"location":"swedencentral"}'
     }
     if ($command -like 'cognitiveservices usage list*') {
+        if (-not $state.QuotaVisible) { return '[]' }
         return (ConvertTo-Json -Compress -Depth 5 -InputObject @(
             @{ name = @{ value = 'OpenAI.DataZoneStandard.gpt-5-mini' }; currentValue = $state.QuotaUsed; limit = $state.QuotaLimit }
         ))
@@ -66,4 +67,8 @@ $failed = $false
 try { & $path @parameters } catch { $failed = $_.Exception.Message -like 'Insufficient Foundry quota*' }
 Assert-True $failed 'Missing quota must fail explicitly.'
 Assert-True ($state.Patches.Count -eq 0) 'Missing quota must not change capacity.'
-Write-Host 'Passed: import capacity raise, idempotence, WhatIf and quota checks.'
+
+$state.QuotaVisible = $false
+& $path @parameters -WarningAction SilentlyContinue
+Assert-True ($state.Patches.Count -eq 1) 'Unreadable quota must still attempt the capacity raise.'
+Write-Host 'Passed: import capacity raise, idempotence, WhatIf, quota and unreadable-quota checks.'
