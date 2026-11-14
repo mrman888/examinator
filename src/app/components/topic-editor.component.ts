@@ -34,13 +34,13 @@ import { type TopicDefinition } from '../services/exam-import-client';
     </div>
   `,
   styles: [`
-    fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; padding: 14px; min-width: 0; }
+    fieldset { border: 1px solid var(--color-border); border-radius: 8px; margin: 12px 0; padding: 14px; min-width: 0; }
     legend { font-weight: bold; font-size: 13px; }
     label { display: grid; gap: 5px; margin: 8px 0; font-size: 12px; }
-    input, textarea { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+    input, textarea { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--color-border); border-radius: 4px; font: inherit; }
     .row { display: flex; flex-wrap: wrap; gap: 12px; } .row label { flex: 1 1 180px; }
-    button { padding: 7px 10px; background: var(--green-pale); color: var(--green-dark); border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
-    :is(input, textarea, button):focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+    button { padding: 7px 10px; background: var(--color-accent-subtle); color: var(--color-accent-strong); border: 1px solid var(--color-border); border-radius: 5px; cursor: pointer; }
+    :is(input, textarea, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
     button:disabled { opacity: .5; cursor: default; }
   `],
 })

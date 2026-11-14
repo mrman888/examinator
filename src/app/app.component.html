@@ -10,6 +10,10 @@
     <button class="topbar-status" type="button" [attr.aria-pressed]="showAiTest()" (click)="showAiTest.set(!showAiTest()); showImport.set(false)">
       {{ showAiTest() ? 'Terug naar examens' : 'AI testen' }}
     </button>
+    <button class="topbar-status theme-toggle" type="button" [attr.aria-label]="themeToggleLabel()" [title]="themeToggleLabel()" (click)="cycleTheme()">
+      <span aria-hidden="true">{{ themeIcon() }}</span>
+      <span>{{ themeLabel() }}</span>
+    </button>
     <div class="year-picker" #yearPicker>
       <button class="topbar-status" type="button" aria-label="Selecteer examen" [attr.aria-expanded]="yearMenuOpen()" (click)="toggleYearMenu()">
         <span class="status-dot"></span>
