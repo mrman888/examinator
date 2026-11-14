@@ -131,11 +131,12 @@ public sealed class GatewayTests
         }
 
         var actions = new[] { "/api/imports", "/api/imports/id/confirm-definitions",
-            "/api/imports/id/publish", "/api/imports/id/cancel", "/api/imports/id/retry" };
+            "/api/imports/id/publish", "/api/imports/id/cancel", "/api/imports/id/retry", "/api/imports/id/reprocess" };
         foreach (var path in actions)
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync(path, null)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden,
             (await client.PatchAsync("/api/imports/id/draft", JsonContent.Create(new { }))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.DeleteAsync("/api/imports/id")).StatusCode);
 
         client.DefaultRequestHeaders.Add("Origin", "https://website.example");
         client.DefaultRequestHeaders.Add("X-Examinator-Request", "1");
@@ -143,7 +144,43 @@ public sealed class GatewayTests
             Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsync(path, null)).StatusCode);
         Assert.Equal(HttpStatusCode.ServiceUnavailable,
             (await client.PatchAsync("/api/imports/id/draft", JsonContent.Create(new { }))).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.DeleteAsync("/api/imports/id")).StatusCode);
         Assert.Equal(0, app.Backend.Calls);
+    }
+
+    [Fact]
+    public async Task ProgressEventsAreReadOnlyAndNeedAnApprovedPrincipalBeforeProxying()
+    {
+        await using var app = new GatewayFactory();
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Forbidden, (await anonymous.GetAsync("/api/imports/events")).StatusCode);
+        Assert.Equal(0, app.Events.Calls);
+
+        using var client = app.ApprovedClient();
+        client.DefaultRequestHeaders.Add("Origin", "https://website.example");
+        client.DefaultRequestHeaders.Add("X-Examinator-Request", "1");
+        foreach (var method in new[] { HttpMethod.Post, HttpMethod.Put, HttpMethod.Delete, HttpMethod.Patch })
+        {
+            using var request = new HttpRequestMessage(method, "/api/imports/events");
+            using var refused = await client.SendAsync(request);
+            Assert.NotEqual(HttpStatusCode.OK, refused.StatusCode);
+        }
+        Assert.Equal(0, app.Events.Calls);
+
+        using var plain = app.ApprovedClient();
+        using var response = await plain.GetAsync("/api/imports/events");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("event: ping\ndata: {}\n\n", await response.Content.ReadAsStringAsync());
+        Assert.Equal(1, app.Events.Calls);
+    }
+
+    [Fact]
+    public async Task ProgressEventsUseAClientWithoutTimeout()
+    {
+        await using var app = new GatewayFactory();
+        var factory = app.Services.GetRequiredService<IHttpClientFactory>();
+        Assert.Equal(Timeout.InfiniteTimeSpan, factory.CreateClient(nameof(IImportEventsGateway)).Timeout);
+        Assert.Equal(TimeSpan.FromSeconds(110), factory.CreateClient(nameof(IImportGateway)).Timeout);
     }
 
     private static string Principal(string user) => Convert.ToBase64String(Encoding.UTF8.GetBytes(
@@ -156,6 +193,7 @@ public sealed class GatewayTests
     private sealed class GatewayFactory : WebApplicationFactory<WebAssemblyMarker>
     {
         public FakeBackend Backend { get; } = new();
+        public FakeEventsGateway Events { get; } = new();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -176,6 +214,8 @@ public sealed class GatewayTests
                 services.AddSingleton<IGatewayClient>(Backend);
                 services.RemoveAll<IImportGateway>();
                 services.AddSingleton<IImportGateway, FakeImportGateway>();
+                services.RemoveAll<IImportEventsGateway>();
+                services.AddSingleton<IImportEventsGateway>(Events);
             });
         }
 
@@ -194,6 +234,17 @@ public sealed class GatewayTests
         {
             Calls++;
             return Task.FromResult<IResult>(TypedResults.Ok(new GatewayPromptResponse("Gateway reply")));
+        }
+    }
+
+    private sealed class FakeEventsGateway : IImportEventsGateway
+    {
+        public int Calls { get; private set; }
+        public async Task ForwardAsync(HttpContext context, CancellationToken cancellationToken)
+        {
+            Calls++;
+            context.Response.ContentType = "text/event-stream";
+            await context.Response.WriteAsync("event: ping\ndata: {}\n\n", cancellationToken);
         }
     }
 

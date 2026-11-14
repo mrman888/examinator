@@ -148,6 +148,31 @@ public sealed class ImportClassifierTests
     }
 
     [Fact]
+    public async Task ReportsTheThrottledWaitAsProgressAndResumesThePhase()
+    {
+        var result = new ClassificationResult("biology", "q1", 1,
+            [new("biology-cells", "Celstructuur is nodig.", ["exam-block-1"])], false, []);
+        using var http = new HttpClient(new SequenceHandler(Throttled(TimeSpan.FromSeconds(7)), Ok(Response(result))));
+        var store = new MemoryImportStore();
+        var reporter = new ImportProgressReporter(store, TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ImportProgressReporter>.Instance);
+        var id = Guid.NewGuid().ToString("N");
+        await reporter.StartAsync(id, 1, 1, 64, default);
+        await reporter.PhaseAsync("tagging", "Vraag 1 van 1: onderwerpen toekennen", default, 1, 1, "vraag");
+        ImportProgress? during = null;
+        var model = new ImportModel(http, new Credential(), Configuration(), reporter)
+        {
+            Delay = (_, _) => { during = store.Progress(id); return Task.CompletedTask; }
+        };
+        await model.ClassifyAsync(Question, Topics, Blocks, [], default);
+        Assert.Equal("throttled", during!.Phase);
+        Assert.Equal("Wachten op modelcapaciteit, nieuwe poging over 7 s", during.Message);
+        var after = store.Progress(id)!;
+        Assert.Equal("tagging", after.Phase);
+        Assert.Equal("Vraag 1 van 1: onderwerpen toekennen", after.Message);
+    }
+
+    [Fact]
     public async Task ReportsPersistentThrottlingAsCapacityProblem()
     {
         var handler = new SequenceHandler(Enumerable.Range(0, ImportModel.MaximumRateLimitRetries + 1)

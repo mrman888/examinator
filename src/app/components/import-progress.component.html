@@ -1,0 +1,49 @@
+@if (compact()) {
+  <span class="phase">{{ label() }}</span>
+  @if (progress(); as value) {
+    @if (stepText(); as text) {
+      <progress [value]="value.step ?? 0" [max]="value.total ?? 1" [attr.aria-label]="label() + ': ' + text"></progress>
+      <small>{{ text }}</small>
+    }
+    @if (value.stale) { <small class="stale">Geen reactie</small> }
+  }
+} @else {
+  <section class="progress" aria-label="Voortgang van de verwerking">
+    <ol class="stepper">
+      @for (step of steps(); track step.key; let index = $index) {
+        <li [class.done]="index < current()" [class.current]="index === current()"
+          [attr.aria-current]="index === current() ? 'step' : null">{{ step.label }}</li>
+      }
+    </ol>
+    @if (progress(); as value) {
+      <p class="message">{{ value.message }}</p>
+      @if (stepText(); as text) {
+        <div class="bar">
+          <progress [value]="value.step ?? 0" [max]="value.total ?? 1" [attr.aria-label]="text"></progress>
+          <span>{{ text }}@if (percent() !== null) { ({{ percent() }}%)}</span>
+        </div>
+      }
+      @if (modelCalls(); as calls) { <p class="meta">{{ calls }}</p> }
+      @if (updatedAt(); as time) { <p class="meta">Laatst bijgewerkt om {{ time }}</p> }
+      @if (value.stale) {
+        <p class="warning stale">
+          @if (value.phase === 'queued') {
+            {{ value.message }}. Controleer of de achtergrondtaak draait; de import blijft bewaard.
+          } @else {
+            De achtergrondtaak reageert niet (laatste teken van leven om {{ heartbeatAt() }}). De taak wordt mogelijk opnieuw gestart.
+          }
+        </p>
+      }
+    } @else {
+      <p class="message">De verwerking loopt op de achtergrond. Je kunt deze pagina verlaten en later terugkomen.</p>
+    }
+    @if (connectionText(); as text) {
+      <div class="connection" [class.live]="connection() === 'live'" [class.polling]="connection() === 'polling'">
+        <span>{{ text }}</span>
+        @if (connection() === 'polling') {
+          <button type="button" (click)="reconnect.emit()">Opnieuw live verbinden</button>
+        }
+      </div>
+    }
+  </section>
+}

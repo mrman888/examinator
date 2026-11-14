@@ -33,6 +33,11 @@ Content-Type: application/pdf
 GET {{baseUrl}}/api/imports
 Authorization: Bearer {{gatewayJwt}}
 
+### Live progress of all processing imports (server-sent events: progress, settled, ping; closes after 180 s)
+GET {{baseUrl}}/api/imports/events
+Authorization: Bearer {{gatewayJwt}}
+Accept: text/event-stream
+
 ### Review detail
 GET {{baseUrl}}/api/imports/{{importId}}
 Authorization: Bearer {{gatewayJwt}}

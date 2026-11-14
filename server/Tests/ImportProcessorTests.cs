@@ -185,11 +185,75 @@ public sealed class ImportProcessorTests
         Assert.Equal(0, retried.ProcessingAttempts);
     }
 
-    internal static ExamImports Service(MemoryImportStore store) => new(store, NullLogger<ExamImports>.Instance);
-    private static ImportProcessor Processor(MemoryImportStore store, Model model, int calls = 64) => new(store, model,
+    internal static ExamImports Service(MemoryImportStore store, IPdfDownloader? downloader = null) =>
+        new(store, downloader ?? new NoDownloader(), NullLogger<ExamImports>.Instance);
+    internal static ImportProcessor Processor(MemoryImportStore store, Model model, int calls = 64,
+        ImportProgressReporter? progress = null) => new(store, model,
         new Renderer(), new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         { ["Foundry:ImportDeployment"] = "synthetic", ["Import:MaximumModelCalls"] = calls.ToString() }).Build(),
-        NullLogger<ImportProcessor>.Instance);
+        NullLogger<ImportProcessor>.Instance, progress);
+
+    private static ImportProgressReporter Reporter(MemoryImportStore store) =>
+        new(store, TimeProvider.System, NullLogger<ImportProgressReporter>.Instance);
+
+    [Fact]
+    public async Task ReportsEveryPhaseWithQuestionStepsAndModelCalls()
+    {
+        var store = new MemoryImportStore();
+        var record = await Service(store).CreateAsync(Form(), default);
+        await Processor(store, new Model(), progress: Reporter(store)).ProcessAsync(record.Id, default);
+        Assert.Equal("review", store.Record!.State);
+        var phases = store.ProgressWrites.Select(p => p.Phase).Distinct().ToArray();
+        Assert.Equal(["starting", "extracting", "rendering", "inventory", "aligning", "tagging", "finishing"], phases);
+        Assert.Contains(store.ProgressWrites, p => p.Message == "Examen-PDF uitlezen (1 van 2)");
+        Assert.Contains(store.ProgressWrites, p => p.Message == "Pagina's renderen: examen (1 pagina)");
+        Assert.Contains(store.ProgressWrites, p => p.Message == "Vragen inventariseren in het examen");
+        var tagging = store.ProgressWrites.First(p => p.Phase == "tagging");
+        Assert.Equal((1, 1, "vraag", "Vraag 1 van 1: onderwerpen toekennen"),
+            (tagging.Step!.Value, tagging.Total!.Value, tagging.Unit, tagging.Message));
+        Assert.Equal(3, tagging.ModelCalls);
+        var final = store.Progress(record.Id)!;
+        Assert.Equal("finishing", final.Phase);
+        Assert.Equal((1, 3, 64), (final.Attempt, final.ModelCalls, final.ModelCallBudget));
+        Assert.All(store.ProgressWrites, p => Assert.Equal(record.Id, p.ImportId));
+        Assert.Equal(store.ProgressWrites.Select(p => p.Sequence).Order(), store.ProgressWrites.Select(p => p.Sequence));
+    }
+
+    [Fact]
+    public async Task ReportsChapterDefinitionsBeforePausingForApproval()
+    {
+        var store = new MemoryImportStore();
+        var record = await Service(store).CreateAsync(Form("Leerdoelen celstructuur"), default);
+        await Processor(store, new Model(), progress: Reporter(store)).ProcessAsync(record.Id, default);
+        Assert.Equal("awaitingDefinitions", store.Record!.State);
+        var latest = store.Progress(record.Id)!;
+        Assert.Equal("definitions", latest.Phase);
+        Assert.Equal("Hoofdstukdefinities voorstellen", latest.Message);
+        Assert.Equal(1, latest.ModelCalls);
+    }
+
+    [Fact]
+    public async Task AFailingProgressStoreDoesNotFailTheImport()
+    {
+        var store = new MemoryImportStore { ProgressFailure = new RequestFailedException(412, "Synthetic progress outage.") };
+        var record = await Service(store).CreateAsync(Form(), default);
+        await Processor(store, new Model(), progress: Reporter(store)).ProcessAsync(record.Id, default);
+        Assert.Equal("review", store.Record!.State);
+        Assert.Null(store.Record.Error);
+        Assert.Empty(store.ProgressWrites);
+    }
+
+    [Fact]
+    public async Task AFailedImportKeepsItsLastProgressForTheAttempt()
+    {
+        var store = new MemoryImportStore();
+        var record = await Service(store).CreateAsync(Form(), default);
+        await Processor(store, new Model { CountMismatch = true }, progress: Reporter(store)).ProcessAsync(record.Id, default);
+        Assert.Equal("failed", store.Record!.State);
+        var latest = store.Progress(record.Id)!;
+        Assert.Equal("inventory", latest.Phase);
+        Assert.Equal(2, latest.ModelCalls);
+    }
 
     internal static IFormCollection Form(string context = "", bool unknownSitting = false)
     {
@@ -247,7 +311,7 @@ public sealed class ImportProcessorTests
             Task.FromResult(Enumerable.Range(1, pages).Select(page => new PageImage(page, "synthetic-image")).ToArray());
     }
 
-    private sealed class Model : IImportModel
+    internal sealed class Model : IImportModel
     {
         public int Calls { get; private set; }
         public bool CodeMismatch { get; init; }
@@ -281,18 +345,76 @@ public sealed class ImportProcessorTests
 
 internal sealed class MemoryImportStore : IImportPersistence
 {
-    public ImportRecord? Record { get; set; }
+    private readonly Dictionary<string, ImportRecord> records = [];
+    private string? latest;
+    public ImportRecord? Record
+    {
+        get => latest is not null && records.TryGetValue(latest, out var record) ? record : null;
+        set { if (value is null) { if (latest is not null) records.Remove(latest); } else { records[value.Id] = value; latest = value.Id; } }
+    }
     public ImportWork? Work { get; set; }
+    public bool Leased { get; set; }
+    public List<string> Deleted { get; } = [];
+    public List<string> Released { get; } = [];
     public int Dispatches { get; private set; }
     public bool FailDispatch { get; init; }
     public Dictionary<string, byte[]> Documents { get; } = [];
+    public Dictionary<string, DocumentHashEntry> Hashes { get; } = [];
+    public int Uploads { get; private set; }
     private int version;
-    public Task<ImportRecord?> ReadAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Record?.Id == id ? Record : null);
+    private readonly Dictionary<string, DateTimeOffset> modified = [];
+    private readonly Dictionary<string, (ImportProgress Progress, string ETag)> progress = [];
+    public Func<DateTimeOffset> Clock { get; set; } = () => DateTimeOffset.UtcNow;
+    public List<ImportProgress> ProgressWrites { get; } = [];
+    public Exception? ProgressFailure { get; set; }
+    // Progress streams poll from a background task, so record and progress access is serialized.
+    private readonly Lock sync = new();
+    public ImportProgress? Progress(string id) { lock (sync) return progress.TryGetValue(id, out var item) ? item.Progress : null; }
+    public Task<ImportRecord?> ReadAsync(string id, CancellationToken cancellationToken)
+    {
+        lock (sync) return Task.FromResult(records.GetValueOrDefault(id));
+    }
     public Task<ImportRecord> WriteAsync(ImportRecord record, string? revision, CancellationToken cancellationToken)
     {
-        if (Record is not null && Record.Revision != revision) throw new RequestFailedException(412, "Stale synthetic revision.");
-        Record = record with { Revision = $"\"v{++version}\"" };
-        return Task.FromResult(Record);
+        lock (sync)
+        {
+            if (records.TryGetValue(record.Id, out var current) && current.Revision != revision) throw new RequestFailedException(412, "Stale synthetic revision.");
+            Record = record with { Revision = $"\"v{++version}\"" };
+            modified[record.Id] = Clock();
+            return Task.FromResult(Record!);
+        }
+    }
+    public Task WriteProgressAsync(ImportProgress value, CancellationToken cancellationToken)
+    {
+        if (ProgressFailure is not null) throw ProgressFailure;
+        lock (sync)
+        {
+            ProgressWrites.Add(value);
+            progress[value.ImportId] = (value, $"\"p{++version}\"");
+        }
+        return Task.CompletedTask;
+    }
+    public Task<Versioned<ImportProgress>?> ReadProgressAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            if (!progress.TryGetValue(id, out var item)) return Task.FromResult<Versioned<ImportProgress>?>(new(null, null, null));
+            return Task.FromResult(item.ETag == ifNoneMatch ? null : new Versioned<ImportProgress>(item.Progress, item.ETag, null));
+        }
+    }
+    public Task<Versioned<ImportRecord>?> ReadIfChangedAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            if (!records.TryGetValue(id, out var record)) return Task.FromResult<Versioned<ImportRecord>?>(new(null, null, null));
+            return Task.FromResult(record.Revision == ifNoneMatch ? null
+                : new Versioned<ImportRecord>(record, record.Revision, modified.GetValueOrDefault(id, Clock())));
+        }
+    }
+    public Task<string[]> ListProcessingIdsAsync(CancellationToken cancellationToken)
+    {
+        lock (sync) return Task.FromResult(records.Values
+            .Where(record => record.State is "queued" or "extracting" or "aligning" or "tagging").Select(record => record.Id).ToArray());
     }
     public Task EnqueueAsync(string id, CancellationToken cancellationToken)
     {
@@ -305,10 +427,47 @@ internal sealed class MemoryImportStore : IImportPersistence
         using var bytes = new MemoryStream();
         await stream.CopyToAsync(bytes, cancellationToken);
         Documents[id] = bytes.ToArray();
+        Uploads++;
+        if (role is "exam" or "answers")
+        {
+            var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Documents[id])).ToLowerInvariant();
+            Hashes.TryAdd(digest, new DocumentHashEntry(digest, id, role, importId, DateTimeOffset.UtcNow));
+        }
     }
+    public Task<DocumentHashEntry?> FindHashAsync(string sha256, CancellationToken cancellationToken) =>
+        Task.FromResult(Hashes.GetValueOrDefault(sha256.ToLowerInvariant()));
     public Task<ImportWork?> ReadWorkAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Work);
     public Task WriteWorkAsync(string id, ImportWork work, CancellationToken cancellationToken) { Work = work; return Task.CompletedTask; }
-    public Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken) => Task.FromResult(Record is null ? Array.Empty<ImportRecord>() : [Record]);
+    public Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken) => ListAllAsync(cancellationToken);
+    public Task<ImportRecord[]> ListAllAsync(CancellationToken cancellationToken) => Task.FromResult(
+        records.Values.OrderByDescending(record => record.CreatedAt).ThenBy(record => record.Id, StringComparer.Ordinal).ToArray());
+    public Task<bool> IsLeasedAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Leased);
+    public Task DeleteAsync(ImportRecord record, CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            if (!records.TryGetValue(record.Id, out var current) || current.Revision != record.Revision)
+                throw new RequestFailedException(412, "Stale synthetic revision.");
+            records.Remove(record.Id);
+            progress.Remove(record.Id);
+            Deleted.Add(record.Id);
+        }
+        Work = null;
+        return Task.CompletedTask;
+    }
+    public Task ReleaseDocumentAsync(string documentId, string deletedImportId, string? survivorImportId, CancellationToken cancellationToken)
+    {
+        Released.Add(documentId);
+        var hash = Hashes.Values.FirstOrDefault(entry => entry.DocumentId == documentId);
+        if (survivorImportId is not null)
+        {
+            if (hash is not null && hash.ImportId == deletedImportId) Hashes[hash.Sha256] = hash with { ImportId = survivorImportId };
+            return Task.CompletedTask;
+        }
+        Documents.Remove(documentId);
+        if (hash is not null) Hashes.Remove(hash.Sha256);
+        return Task.CompletedTask;
+    }
     public Task<DocumentDownload?> DownloadAsync(string id, CancellationToken cancellationToken) => Task.FromResult(
         Documents.TryGetValue(id, out var bytes) ? new DocumentDownload(new MemoryStream(bytes), "application/pdf", new ETag("\"document\""), DateTimeOffset.UtcNow) : null);
     public Task<ImportRecord> PublishAsync(ImportRecord record, CancellationToken cancellationToken) => WriteAsync(record, record.Revision, cancellationToken);
@@ -316,4 +475,10 @@ internal sealed class MemoryImportStore : IImportPersistence
         Record?.State == "published" ? new CatalogResponse([new("biology", "Biologie")], Record.Topics, [],
             [new(Record.Id, "biology", "havo", 2025, 1, $"/api/documents/{Record.ExamDocumentId}", $"/api/documents/{Record.AnswerDocumentId}")]) :
             new CatalogResponse([new("biology", "Biologie")], [], [], []));
+}
+
+internal sealed class NoDownloader : IPdfDownloader
+{
+    public Task<byte[]> DownloadAsync(string url, CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("No download expected.");
 }

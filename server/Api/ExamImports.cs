@@ -7,41 +7,69 @@ namespace Examinator.Api;
 public interface IExamImports
 {
     Task<ImportRecord> CreateAsync(IFormCollection form, CancellationToken cancellationToken);
+    Task<ImportRecord> ReprocessAsync(string sourceId, IFormCollection form, CancellationToken cancellationToken);
     Task<ImportRecord> GetAsync(string id, CancellationToken cancellationToken);
     Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken);
     Task<ImportRecord> UpdateAsync(string id, string action, object update, CancellationToken cancellationToken);
+    Task DeleteAsync(string id, CancellationToken cancellationToken);
     Task<DocumentDownload?> DocumentAsync(string id, CancellationToken cancellationToken);
     Task<CatalogResponse> CatalogAsync(string subjectId, CancellationToken cancellationToken);
 }
 
-public sealed class ExamImports(IImportPersistence storage, ILogger<ExamImports> logger) : IExamImports
+public sealed class ExamImports(IImportPersistence storage, IPdfDownloader downloader, ILogger<ExamImports> logger) : IExamImports
 {
     public async Task<ImportRecord> CreateAsync(IFormCollection form, CancellationToken cancellationToken)
     {
-        ImportMetadata? metadata;
-        try { metadata = JsonSerializer.Deserialize<ImportMetadata>(form["metadata"].ToString(), new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
-        catch (JsonException) { throw new ImportProblem(400, "Ongeldige importmetadata."); }
-        if (!ImportValidation.ValidUploadMetadata(metadata) || metadata!.Topics.Length == 0)
-            throw new ImportProblem(400, "Geef Biologie, HAVO en geldige onderwerpdefinities op.");
-        if (form.Files.Count is < 2 or > 3 || form.Files.Any(file => file.Name is not ("exam" or "answers" or "context")) ||
-            form.Files.GroupBy(file => file.Name).Any(group => group.Count() > 1))
-            throw new ImportProblem(400, "Upload een examen-PDF, antwoord-PDF en eventueel een screenshot.");
-        var exam = form.Files.GetFile("exam") ?? throw new ImportProblem(400, "Het examendocument ontbreekt.");
-        var answers = form.Files.GetFile("answers") ?? throw new ImportProblem(400, "Het antwoorddocument ontbreekt.");
+        var metadata = ParseMetadata(form);
+        if (form.Files.Any(file => file.Name is not ("exam" or "answers" or "context")) ||
+            form.Files.GroupBy(file => file.Name).Any(group => group.Count() > 1) ||
+            form["examUrl"].Count > 1 || form["answersUrl"].Count > 1)
+            throw new ImportProblem(400, "Geef een examen-PDF, antwoord-PDF en eventueel een screenshot op.");
         var context = form.Files.GetFile("context");
         var contextText = form["contextText"].ToString();
         if (contextText.Length > 12_000) throw new ImportProblem(400, "De hoofdstuktekst is te lang.");
-        await ValidateFileAsync(exam, false, cancellationToken);
-        await ValidateFileAsync(answers, false, cancellationToken);
+        var exam = await ResolvePdfAsync(form, "exam", "Het examendocument", cancellationToken);
+        var answers = await ResolvePdfAsync(form, "answers", "Het antwoorddocument", cancellationToken);
         string? contextType = context is null ? null : await ValidateFileAsync(context, true, cancellationToken);
+        await RejectDuplicatesAsync([("exam", exam.Sha256), ("answers", answers.Sha256)], cancellationToken);
         var id = Guid.NewGuid().ToString("N");
         var record = new ImportRecord(id, "queued", metadata, metadata.Topics, [], [], null, "",
             Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow,
             context is null ? null : Guid.NewGuid().ToString("N"), contextText);
-        await using (var stream = exam.OpenReadStream())
+        await using (var stream = exam.Open())
             await storage.UploadAsync(record.ExamDocumentId, stream, "application/pdf", "exam", metadata, id, cancellationToken);
-        await using (var stream = answers.OpenReadStream())
+        await using (var stream = answers.Open())
             await storage.UploadAsync(record.AnswerDocumentId, stream, "application/pdf", "answers", metadata, id, cancellationToken);
+        if (context is not null)
+        {
+            await using var stream = context.OpenReadStream();
+            await storage.UploadAsync(record.ContextDocumentId!, stream, contextType!, "context", metadata, id, cancellationToken);
+        }
+        record = await storage.WriteAsync(record, null, cancellationToken);
+        return await DispatchAsync(record, cancellationToken);
+    }
+
+    public async Task<ImportRecord> ReprocessAsync(string sourceId, IFormCollection form, CancellationToken cancellationToken)
+    {
+        var source = await GetAsync(sourceId, cancellationToken);
+        var metadata = ParseMetadata(form);
+        if (form.Files.Count > 1 || form.Files.Any(file => file.Name != "context"))
+            throw new ImportProblem(400, "Alleen een screenshot kan worden toegevoegd bij opnieuw verwerken.");
+        var contextText = form["contextText"].ToString();
+        if (contextText.Length > 12_000) throw new ImportProblem(400, "De hoofdstuktekst is te lang.");
+        foreach (var documentId in new[] { source.ExamDocumentId, source.AnswerDocumentId })
+        {
+            var document = await storage.DownloadAsync(documentId, cancellationToken)
+                ?? throw new ImportProblem(409, "Het bronbestand van deze import ontbreekt.");
+            await document.Stream.DisposeAsync();
+        }
+        var context = form.Files.GetFile("context");
+        string? contextType = context is null ? null : await ValidateFileAsync(context, true, cancellationToken);
+        metadata = metadata with { Year = source.Metadata.Year, Timevak = source.Metadata.Timevak };
+        var id = Guid.NewGuid().ToString("N");
+        var record = new ImportRecord(id, "queued", metadata, metadata.Topics, [], [], null, "",
+            source.ExamDocumentId, source.AnswerDocumentId, DateTimeOffset.UtcNow,
+            context is null ? null : Guid.NewGuid().ToString("N"), contextText);
         if (context is not null)
         {
             await using var stream = context.OpenReadStream();
@@ -96,6 +124,29 @@ public sealed class ExamImports(IImportPersistence storage, ILogger<ExamImports>
         return next;
     }
 
+    public async Task DeleteAsync(string id, CancellationToken cancellationToken)
+    {
+        var record = await GetAsync(id, cancellationToken);
+        if (record.State == "published")
+            throw new ImportProblem(409, "Een gepubliceerde import kan niet worden verwijderd.");
+        if (record.State is "extracting" or "aligning" or "tagging" || await storage.IsLeasedAsync(id, cancellationToken))
+            throw new ImportProblem(409, "Deze import wordt verwerkt en kan nu niet worden verwijderd. Probeer het later opnieuw.");
+        try { await storage.DeleteAsync(record, cancellationToken); }
+        catch (RequestFailedException exception) when (exception.Status is 409 or 412)
+        {
+            throw new ImportProblem(409, "De import is gewijzigd. Vernieuw de gegevens voordat je verwijdert.");
+        }
+        var remaining = (await storage.ListAllAsync(cancellationToken)).Where(other => other.Id != id).ToArray();
+        var documentIds = new[] { record.ExamDocumentId, record.AnswerDocumentId, record.ContextDocumentId }
+            .OfType<string>().Distinct();
+        foreach (var documentId in documentIds)
+        {
+            var survivor = remaining.FirstOrDefault(other => other.ExamDocumentId == documentId ||
+                other.AnswerDocumentId == documentId || other.ContextDocumentId == documentId);
+            await storage.ReleaseDocumentAsync(documentId, id, survivor?.Id, cancellationToken);
+        }
+    }
+
     public Task<DocumentDownload?> DocumentAsync(string id, CancellationToken cancellationToken)
     {
         if (!Guid.TryParseExact(id, "N", out _)) throw new ImportProblem(404, "Het document bestaat niet.");
@@ -117,6 +168,60 @@ public sealed class ExamImports(IImportPersistence storage, ILogger<ExamImports>
             }, record.Revision, cancellationToken);
         }
         return record;
+    }
+
+    private static ImportMetadata ParseMetadata(IFormCollection form)
+    {
+        ImportMetadata? metadata;
+        try { metadata = JsonSerializer.Deserialize<ImportMetadata>(form["metadata"].ToString(), new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+        catch (JsonException) { throw new ImportProblem(400, "Ongeldige importmetadata."); }
+        if (!ImportValidation.ValidUploadMetadata(metadata) || metadata!.Topics.Length == 0)
+            throw new ImportProblem(400, "Geef Biologie, HAVO en geldige onderwerpdefinities op.");
+        return metadata;
+    }
+
+    private async Task RejectDuplicatesAsync((string Role, string Sha256)[] items, CancellationToken cancellationToken)
+    {
+        var duplicates = new List<DuplicateImport>();
+        ImportRecord[]? all = null;
+        foreach (var (role, sha) in items)
+        {
+            var entry = await storage.FindHashAsync(sha, cancellationToken);
+            if (entry is null) continue;
+            all ??= await storage.ListAsync(cancellationToken);
+            var matches = all.Where(r => r.ExamDocumentId == entry.DocumentId || r.AnswerDocumentId == entry.DocumentId).ToList();
+            if (matches.Count == 0 && await storage.ReadAsync(entry.ImportId, cancellationToken) is { } origin) matches.Add(origin);
+            if (matches.Count == 0) duplicates.Add(new DuplicateImport(entry.ImportId, "unknown", 0, 0, role, entry.DocumentId));
+            duplicates.AddRange(matches.Select(r => new DuplicateImport(r.Id, r.State, r.Metadata.Year, r.Metadata.Timevak, role, entry.DocumentId)));
+        }
+        if (duplicates.Count > 0) throw new ImportDuplicateProblem(duplicates.ToArray());
+    }
+
+    private static async Task<string> HashAsync(Func<Stream> open, CancellationToken cancellationToken)
+    {
+        await using var stream = open();
+        return Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
+    }
+
+    private sealed record PdfSource(Func<Stream> Open, string Sha256);
+
+    private async Task<PdfSource> ResolvePdfAsync(IFormCollection form, string name, string label, CancellationToken cancellationToken)
+    {
+        var file = form.Files.GetFile(name);
+        var url = form[$"{name}Url"].ToString().Trim();
+        if (file is not null && url.Length > 0) throw new ImportProblem(400, $"{label}: kies een bestand of een link, niet beide.");
+        if (file is not null)
+        {
+            await ValidateFileAsync(file, false, cancellationToken);
+            return new PdfSource(file.OpenReadStream, await HashAsync(file.OpenReadStream, cancellationToken));
+        }
+        if (url.Length == 0) throw new ImportProblem(400, $"{label} ontbreekt.");
+        var bytes = await downloader.DownloadAsync(url, cancellationToken);
+        if (bytes.Length is < 5 || bytes.Length > PdfExtraction.MaximumFileBytes)
+            throw new ImportProblem(413, "Maximaal 20 MiB per PDF en 5 MiB per screenshot.");
+        if (!bytes.AsSpan().StartsWith("%PDF-"u8)) throw new ImportProblem(400, "Het bestand is geen PDF.");
+        return new PdfSource(() => new MemoryStream(bytes, writable: false),
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant());
     }
 
     private static async Task<string> ValidateFileAsync(IFormFile file, bool image, CancellationToken cancellationToken)

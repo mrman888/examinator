@@ -1,6 +1,7 @@
 using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs.Specialized;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Examinator.Api;
 
@@ -22,8 +23,14 @@ public static class ImportRegistration
         services.AddSingleton<IImportPersistence>(provider => provider.GetRequiredService<ImportStorage>());
         services.AddScoped<IExamImports, ExamImports>();
         services.AddHttpClient<IImportModel, ImportModel>(client => client.Timeout = TimeSpan.FromSeconds(120));
+        services.AddHttpClient<IPdfDownloader, PdfDownloader>(client => client.Timeout = TimeSpan.FromSeconds(60))
+            .ConfigurePrimaryHttpMessageHandler(PdfDownloader.CreateHandler);
         services.AddSingleton<IPdfRenderer, PdfRenderer>();
         services.AddTransient<ImportProcessor>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(new ImportProgressStreamOptions());
+        services.TryAddSingleton<ImportProgressStreamGate>();
+        services.AddTransient<ImportProgressStream>();
     }
 
     public static async Task RunWorkerAsync(string[] args)
@@ -35,6 +42,7 @@ public static class ImportRegistration
                 builder.Configuration["Azure:ManagedIdentityClientId"] ?? throw new InvalidOperationException("Configure the worker identity."))));
         builder.Services.AddTelemetry(builder.Configuration);
         builder.Services.AddImports(builder.Configuration);
+        builder.Services.AddSingleton<ImportProgressReporter>();
         using var host = builder.Build();
         await host.StartAsync();
         try { await RunWorkerOnceAsync(host, args); }
@@ -78,6 +86,12 @@ public static class ImportRegistration
             await host.StopAsync();
             return;
         }
+        if (await storage.ReadAsync(message.MessageText, ct) is null)
+        {
+            await storage.Queue.DeleteMessageAsync(message.MessageId, message.PopReceipt, ct);
+            await host.StopAsync();
+            return;
+        }
         var blob = storage.Lock(message.MessageText);
         try { await blob.UploadAsync(BinaryData.FromString("lock"), overwrite: false, cancellationToken: ct); }
         catch (Azure.RequestFailedException exception) when (exception.Status == 409) { }
@@ -87,6 +101,7 @@ public static class ImportRegistration
         using var renewCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var receipt = message.PopReceipt;
+        var progress = host.Services.GetRequiredService<ImportProgressReporter>();
         var renew = Task.Run(async () =>
         {
             try
@@ -99,6 +114,7 @@ public static class ImportRegistration
                     await lease.RenewAsync(cancellationToken: deadline.Token);
                     receipt = (await storage.Queue.UpdateMessageAsync(message.MessageId, receipt, message.MessageText,
                         TimeSpan.FromMinutes(5), deadline.Token)).Value.PopReceipt;
+                    await progress.HeartbeatAsync(deadline.Token);
                 }
             }
             catch (Exception)

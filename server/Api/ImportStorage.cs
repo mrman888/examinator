@@ -50,13 +50,14 @@ public sealed class ImportStorage : IImportPersistence
     }
 
     internal ImportStorage(BlobContainerClient records, BlobContainerClient documents, QueueClient queue,
-        BlobContainerClient? results = null, TableClient? catalog = null)
+        BlobContainerClient? results = null, TableClient? catalog = null, TableClient? jobs = null)
     {
         this.records = records;
         this.documents = documents;
         this.queue = queue;
         this.results = results;
         this.catalog = catalog;
+        this.jobs = jobs;
     }
 
     public async Task<ImportRecord?> ReadAsync(string id, CancellationToken cancellationToken)
@@ -129,6 +130,26 @@ public sealed class ImportStorage : IImportPersistence
         {
             ["ImportId"] = importId, ["SubjectId"] = metadata.SubjectId, ["Role"] = role
         }, cancellationToken: cancellationToken);
+        if (role is "exam" or "answers")
+        {
+            try
+            {
+                await CatalogTable.AddEntityAsync(new TableEntity("sha256", digest.ToLowerInvariant())
+                {
+                    ["DocumentId"] = id, ["Role"] = role, ["ImportId"] = importId, ["FirstSeen"] = DateTimeOffset.UtcNow
+                }, cancellationToken);
+            }
+            catch (RequestFailedException exception) when (exception.Status == 409) { }
+        }
+    }
+
+    public async Task<DocumentHashEntry?> FindHashAsync(string sha256, CancellationToken cancellationToken)
+    {
+        var key = sha256.ToLowerInvariant();
+        var row = await CatalogTable.GetEntityIfExistsAsync<TableEntity>("sha256", key, cancellationToken: cancellationToken);
+        if (!row.HasValue || row.Value is not { } value) return null;
+        return new DocumentHashEntry(key, value.GetString("DocumentId")!, value.GetString("Role")!,
+            value.GetString("ImportId")!, value.GetDateTimeOffset("FirstSeen") ?? default);
     }
 
     public async Task<ImportWork?> ReadWorkAsync(string id, CancellationToken cancellationToken) =>
@@ -138,6 +159,37 @@ public sealed class ImportStorage : IImportPersistence
         await records.GetBlobClient($"work/{id}.json").UploadAsync(BinaryData.FromObjectAsJson(work, Json),
             new BlobUploadOptions { HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" } },
             cancellationToken);
+
+    /// <summary>Unconditional write: the leased worker is the only progress writer.</summary>
+    public async Task WriteProgressAsync(ImportProgress progress, CancellationToken cancellationToken) =>
+        await ProgressBlob(progress.ImportId).UploadAsync(BinaryData.FromObjectAsJson(progress, Json),
+            new BlobUploadOptions { HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" } },
+            cancellationToken);
+
+    /// <summary>Returns null when the progress blob still matches <paramref name="ifNoneMatch"/> (HTTP 304).</summary>
+    public Task<Versioned<ImportProgress>?> ReadProgressAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken) =>
+        ReadVersionedAsync<ImportProgress>(ProgressBlob(id), ifNoneMatch, cancellationToken);
+
+    /// <summary>Returns null when the record still matches <paramref name="ifNoneMatch"/> (HTTP 304).</summary>
+    public async Task<Versioned<ImportRecord>?> ReadIfChangedAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken)
+    {
+        var result = await ReadVersionedAsync<ImportRecord>(RecordBlob(id), ifNoneMatch, cancellationToken);
+        return result?.Value is { } record ? result with { Value = record with { Revision = result.ETag! } } : result;
+    }
+
+    /// <summary>Import ids whose job index row is in a processing state (queued, extracting, aligning, tagging).</summary>
+    public async Task<string[]> ListProcessingIdsAsync(CancellationToken cancellationToken)
+    {
+        var ids = new List<string>();
+        await foreach (var entity in JobsTable.QueryAsync<TableEntity>(
+            "PartitionKey eq 'imports' and (State eq 'queued' or State eq 'extracting' or State eq 'aligning' or State eq 'tagging')",
+            maxPerPage: 100, select: ["ImportId"], cancellationToken: cancellationToken))
+        {
+            if (entity.GetString("ImportId") is { } id) ids.Add(id);
+            if (ids.Count == 100) break;
+        }
+        return ids.ToArray();
+    }
 
     public async Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken)
     {
@@ -149,7 +201,112 @@ public sealed class ImportStorage : IImportPersistence
             if (record is not null) list.Add(record);
             if (list.Count == 100) break;
         }
-        return list.OrderByDescending(record => record.CreatedAt).Take(100).ToArray();
+        return list.OrderByDescending(record => record.CreatedAt).ThenBy(record => record.Id, StringComparer.Ordinal)
+            .Take(100).ToArray();
+    }
+
+    public async Task<ImportRecord[]> ListAllAsync(CancellationToken cancellationToken)
+    {
+        var list = new List<ImportRecord>();
+        await foreach (var entity in JobsTable.QueryAsync<TableEntity>("PartitionKey eq 'imports'",
+            maxPerPage: 100, cancellationToken: cancellationToken))
+        {
+            var record = await ReadAsync(entity.GetString("ImportId")!, cancellationToken);
+            if (record is not null) list.Add(record);
+        }
+        return list.OrderByDescending(record => record.CreatedAt).ThenBy(record => record.Id, StringComparer.Ordinal).ToArray();
+    }
+
+    public async Task<bool> IsLeasedAsync(string id, CancellationToken cancellationToken)
+    {
+        ValidateId(id);
+        try
+        {
+            var properties = (await Lock(id).GetPropertiesAsync(cancellationToken: cancellationToken)).Value;
+            return properties.LeaseState == LeaseState.Leased;
+        }
+        catch (RequestFailedException exception) when (exception.Status == 404) { return false; }
+    }
+
+    /// <summary>
+    /// Removes the record (conditional on its revision, so a worker write wins), its job index row, work,
+    /// progress and result data, the lock blob, an unpublished sitting reservation and queued dispatches.
+    /// </summary>
+    public async Task DeleteAsync(ImportRecord record, CancellationToken cancellationToken)
+    {
+        await RecordBlob(record.Id).DeleteAsync(DeleteSnapshotsOption.None,
+            new BlobRequestConditions { IfMatch = new ETag(record.Revision) }, cancellationToken);
+        if (jobs is not null)
+        {
+            var index = Index(record);
+            await jobs.DeleteEntityAsync(index.PartitionKey, index.RowKey, cancellationToken: cancellationToken);
+        }
+        if (catalog is not null) await ReleaseReservationAsync(record, cancellationToken);
+        await records.GetBlobClient($"work/{record.Id}.json").DeleteIfExistsAsync(cancellationToken: cancellationToken);
+        await ProgressBlob(record.Id).DeleteIfExistsAsync(cancellationToken: cancellationToken);
+        if (results is not null)
+            await results.GetBlobClient($"{record.Id}/manifest.json").DeleteIfExistsAsync(cancellationToken: cancellationToken);
+        try { await Lock(record.Id).DeleteIfExistsAsync(cancellationToken: cancellationToken); }
+        catch (RequestFailedException exception) when (exception.Status == 412) { }
+        await DeleteQueuedAsync(record.Id, cancellationToken);
+    }
+
+    private async Task DeleteQueuedAsync(string id, CancellationToken cancellationToken)
+    {
+        var peeked = (await queue.PeekMessagesAsync(32, cancellationToken)).Value;
+        if (!peeked.Any(message => message.MessageText == id)) return;
+        foreach (var message in (await queue.ReceiveMessagesAsync(32, TimeSpan.FromSeconds(2), cancellationToken)).Value)
+            if (message.MessageText == id) await queue.DeleteMessageAsync(message.MessageId, message.PopReceipt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Releases an original: the blob, its document row and its hash row are removed unless another import still
+    /// references it, in which case the rows are repointed to that surviving import.
+    /// </summary>
+    public async Task ReleaseDocumentAsync(string documentId, string deletedImportId, string? survivorImportId,
+        CancellationToken cancellationToken)
+    {
+        var blob = Document(documentId);
+        string? digest = null;
+        try
+        {
+            var properties = (await blob.GetPropertiesAsync(cancellationToken: cancellationToken)).Value;
+            if (properties.Metadata.TryGetValue("sha256", out var value)) digest = value.ToLowerInvariant();
+        }
+        catch (RequestFailedException exception) when (exception.Status == 404) { }
+        var documentRow = (await CatalogTable.GetEntityIfExistsAsync<TableEntity>("documents", documentId,
+            cancellationToken: cancellationToken)).Value;
+        TableEntity? hashRow = null;
+        if (digest is not null)
+            hashRow = (await CatalogTable.GetEntityIfExistsAsync<TableEntity>("sha256", digest, cancellationToken: cancellationToken)).Value;
+        if (survivorImportId is not null)
+        {
+            if (documentRow?.GetString("ImportId") == deletedImportId)
+            {
+                documentRow["ImportId"] = survivorImportId;
+                await CatalogTable.UpdateEntityAsync(documentRow, documentRow.ETag, TableUpdateMode.Replace, cancellationToken);
+            }
+            if (hashRow?.GetString("DocumentId") == documentId && hashRow.GetString("ImportId") == deletedImportId)
+            {
+                hashRow["ImportId"] = survivorImportId;
+                await CatalogTable.UpdateEntityAsync(hashRow, hashRow.ETag, TableUpdateMode.Replace, cancellationToken);
+            }
+            return;
+        }
+        if (hashRow?.GetString("DocumentId") == documentId)
+            await CatalogTable.DeleteEntityAsync("sha256", digest!, hashRow.ETag, cancellationToken);
+        if (documentRow is not null)
+            await CatalogTable.DeleteEntityAsync("documents", documentId, documentRow.ETag, cancellationToken);
+        await blob.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+    }
+
+    private async Task ReleaseReservationAsync(ImportRecord record, CancellationToken cancellationToken)
+    {
+        var partition = $"{record.Metadata.SubjectId}-{record.Metadata.Level}";
+        var key = $"{record.Metadata.Year:D4}-{record.Metadata.Timevak}";
+        var pointer = await CatalogTable.GetEntityIfExistsAsync<TableEntity>(partition, key, cancellationToken: cancellationToken);
+        if (pointer.HasValue && pointer.Value is { } value && value.GetString("ImportId") == record.Id)
+            await CatalogTable.DeleteEntityAsync(partition, key, value.ETag, cancellationToken);
     }
 
     public async Task<DocumentDownload?> DownloadAsync(string id, CancellationToken cancellationToken)
@@ -251,19 +408,13 @@ public sealed class ImportStorage : IImportPersistence
             var record = await ReadAsync(id, cancellationToken);
             if (record is not null)
             {
-                if (record.State == "cancelled")
-                {
-                    var partition = $"{record.Metadata.SubjectId}-{record.Metadata.Level}";
-                    var key = $"{record.Metadata.Year:D4}-{record.Metadata.Timevak}";
-                    var pointer = await CatalogTable.GetEntityIfExistsAsync<TableEntity>(partition, key, cancellationToken: cancellationToken);
-                    if (pointer.HasValue && pointer.Value is { } value && value.GetString("ImportId") == id)
-                        await CatalogTable.DeleteEntityAsync(partition, key, value.ETag, cancellationToken);
-                }
+                if (record.State == "cancelled") await ReleaseReservationAsync(record, cancellationToken);
                 if (item.GetString("State") != record.State)
                     await JobsTable.UpsertEntityAsync(Index(record), cancellationToken: cancellationToken);
                 if (record.State is "queued" or "extracting" or "aligning" or "tagging")
                     await EnqueueAsync(id, cancellationToken);
             }
+            else await JobsTable.DeleteEntityAsync(item.PartitionKey, item.RowKey, cancellationToken: cancellationToken);
         }
     }
 
@@ -276,6 +427,30 @@ public sealed class ImportStorage : IImportPersistence
                 ?? throw new InvalidDataException("The stored import artifact is empty.");
         }
         catch (RequestFailedException exception) when (exception.Status == 404) { return default; }
+    }
+
+    private static async Task<Versioned<T>?> ReadVersionedAsync<T>(BlobClient blob, string? ifNoneMatch,
+        CancellationToken cancellationToken) where T : class
+    {
+        try
+        {
+            var response = await blob.DownloadContentAsync(new BlobDownloadOptions
+            {
+                Conditions = ifNoneMatch is null ? null : new BlobRequestConditions { IfNoneMatch = new ETag(ifNoneMatch) }
+            }, cancellationToken);
+            if (response.GetRawResponse().Status == 304) return null;
+            var result = response.Value;
+            var value = result.Content.ToObjectFromJson<T>(Json) ?? throw new InvalidDataException("The stored import artifact is empty.");
+            return new Versioned<T>(value, result.Details.ETag.ToString(), result.Details.LastModified);
+        }
+        catch (RequestFailedException exception) when (exception.Status == 304) { return null; }
+        catch (RequestFailedException exception) when (exception.Status == 404) { return new Versioned<T>(null, null, null); }
+    }
+
+    private BlobClient ProgressBlob(string id)
+    {
+        ValidateId(id);
+        return records.GetBlobClient($"progress/{id}.json");
     }
 
     private TableClient JobsTable => jobs ?? throw new InvalidOperationException("Import job table is not configured.");
@@ -309,9 +484,18 @@ public sealed class ImportStorage : IImportPersistence
         Task EnqueueAsync(string id, CancellationToken cancellationToken);
         Task UploadAsync(string id, Stream stream, string contentType, string role, ImportMetadata metadata,
             string importId, CancellationToken cancellationToken);
+        Task<DocumentHashEntry?> FindHashAsync(string sha256, CancellationToken cancellationToken);
         Task<ImportWork?> ReadWorkAsync(string id, CancellationToken cancellationToken);
         Task WriteWorkAsync(string id, ImportWork work, CancellationToken cancellationToken);
+        Task WriteProgressAsync(ImportProgress progress, CancellationToken cancellationToken);
+        Task<Versioned<ImportProgress>?> ReadProgressAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken);
+        Task<Versioned<ImportRecord>?> ReadIfChangedAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken);
+        Task<string[]> ListProcessingIdsAsync(CancellationToken cancellationToken);
         Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken);
+        Task<ImportRecord[]> ListAllAsync(CancellationToken cancellationToken);
+        Task<bool> IsLeasedAsync(string id, CancellationToken cancellationToken);
+        Task DeleteAsync(ImportRecord record, CancellationToken cancellationToken);
+        Task ReleaseDocumentAsync(string documentId, string deletedImportId, string? survivorImportId, CancellationToken cancellationToken);
         Task<DocumentDownload?> DownloadAsync(string id, CancellationToken cancellationToken);
         Task<ImportRecord> PublishAsync(ImportRecord record, CancellationToken cancellationToken);
         Task<CatalogResponse> CatalogAsync(string subjectId, CancellationToken cancellationToken);

@@ -28,6 +28,109 @@ requires tested knowledge, not incidental keywords or chapter membership, and
 rejects unknown question/topic/evidence IDs. It does not generate solutions.
 Instructions and checkpoint provenance are in `server/Api/ImportModel.cs`.
 
+Each PDF (`exam`, `answers`) is supplied either as a file part or as an https
+link in the form field `examUrl` / `answersUrl`; exactly one source per field is
+required and the optional `context` screenshot stays file-only. The Api downloads
+links itself (`PdfDownloader`) and the bytes then pass the same validation as
+uploads (`%PDF-` header, 20 MiB limit, HAVO-only metadata) before any storage or
+Foundry call. Link hardening: https only, no credentials, default port only, at
+most 3 redirects (each re-validated), a 30 s deadline, a streamed body aborted
+beyond 20 MiB, and a PDF content type or `%PDF-` magic bytes. Name resolution is
+checked in `SocketsHttpHandler.ConnectCallback`, so a hostname resolving to any
+loopback, private, link-local (including 169.254.169.254), CGNAT, multicast,
+reserved or IPv6 ULA/link-local address is refused at connect time, which also
+covers DNS rebinding. Failures are Dutch problem details with status 400/413.
+
+Original PDFs are kept at `exam-documents/{id}/original.pdf`. Each stored exam or
+answers original also gets a hash index row in the `ExamCatalog` table
+(PartitionKey `sha256`, RowKey the lowercase hex digest; document id, role,
+import id and first-seen time). The digest covers the final bytes, for uploads and
+downloads alike. Before anything is stored or sent to Foundry, an upload whose
+exam or answers digest is already indexed is rejected with HTTP 409 problem
+details (`title`: "Dit document is al eerder verwerkt.") and a `duplicates` array
+of `{ importId, state, year, timevak, role, documentId }` for the earlier
+import(s); no second copy is stored. The UI offers to open the earlier import or
+to reprocess it.
+
+`POST /api/imports/{id}/reprocess` starts a NEW import job from the stored
+originals of import `{id}` without re-uploading them. It takes multipart fields
+`metadata` (the same JSON as an upload, HAVO and at least one topic required),
+`contextText` and an optional `context` screenshot; PDF parts are rejected. The
+new job reuses the existing document ids and sitting, goes through the normal
+extraction, definition approval and review flow, and leaves the original import
+untouched. Publication still cannot silently replace an earlier publication of
+the same sitting. The Web gateway forwards the route with the usual same-origin
+and CSRF checks.
+
+`GET /api/imports` always lists imports newest first by `createdAt`, with the
+import id (ordinal) as tiebreaker, at most 100 entries. The dialog keeps exactly
+that order: it sorts a loaded list once, replaces an updated or reopened record
+in place and removes a deleted one, so selecting, saving or a live refresh never
+moves it.
+
+`DELETE /api/imports/{id}` (answered with 204; the Web gateway applies the usual
+same-origin and CSRF checks) removes an import from the list. It is refused with
+a Dutch 409 for published imports, for imports in `extracting`, `aligning` or
+`tagging` and for imports whose worker lock is currently leased. Queued, failed,
+cancelled, `awaitingDefinitions` and `review` imports can be deleted. The record
+blob is deleted conditionally on its current ETag, so a concurrent worker write
+makes the delete fail with 409. After that the job index row, the work blob, a
+leftover result manifest, the lock blob, an unpublished sitting reservation (only
+when it points to this import) and any queued dispatch for the id are removed.
+A stored document (and its `documents` row) is deleted together with its `sha256`
+hash row only when no other remaining import references that document id;
+reprocessed imports share ids. When a document survives, the document row and
+the hash row are repointed to a surviving import. A worker that still receives a
+deleted id skips it and drops the message.
+
+### Live progress
+
+The leased worker writes `exam-imports/progress/{id}.json` (`ImportProgress`:
+attempt, monotonic sequence, phase, step/total/unit, model calls and budget,
+Dutch message, `updatedAt`, `heartbeatAt`). Phases are `starting`, `extracting`,
+`definitions`, `rendering`, `inventory`, `aligning`, `tagging`, `throttled` (a
+Foundry HTTP 429 wait) and `finishing`. Phase changes are written immediately,
+steps within a phase at most once per 2 seconds (flushed on the next phase and at
+the end), and the 25-second lease renewal adds a heartbeat. Progress writes are
+unconditional, never touch the import record and never fail an import; storage
+errors are only logged. The blob is kept until the import is deleted. The record
+stays authoritative: progress is shown only while the record is `queued`,
+`extracting`, `aligning` or `tagging` and only when its attempt equals the
+record's `processingAttempts`.
+
+`GET /api/imports/events` is one server-sent-event stream for the whole list. It
+starts with `retry: 3000`, then sends a `progress` snapshot for every processing
+import, and afterwards only changes (record ETag, progress sequence or stale flip),
+found by conditional reads every 1.5 s; newly queued imports are discovered from
+the job index every 5 s. Events:
+
+| Event | Payload |
+| --- | --- |
+| `progress` | `{ importId, state, revision, phase, step, total, unit, modelCalls, modelCallBudget, message, updatedAt, heartbeatAt, serverTime, stale }` |
+| `settled` | `{ importId, state, revision }` once an import leaves the processing states (`state` is `deleted` when it disappeared) |
+| `ping` | `{ serverTime }` every 15 s |
+
+`stale` is computed on the server: no heartbeat for 75 s while processing, or a
+queued import that has not started for 3 minutes ("De achtergrondtaak is nog niet
+gestart"; otherwise queued imports report "Wachten op de achtergrondtaak (kan tot
+een minuut duren)", since the worker job polls the queue every 30 s). A stream
+closes after 180 s, below the Container Apps ingress timeout, and EventSource
+reconnects. Each Api replica accepts four concurrent streams (429 beyond that);
+the route answers 503 when imports are disabled. The Web gateway allows the route
+for GET only behind the usual EasyAuth allowlist (no CSRF header, because
+EventSource cannot send one), uses a separate HttpClient without timeout, flushes
+every read and cancels the upstream request when the browser disconnects.
+
+The import dialog opens one stream while at least one listed import processes and
+the tab is visible; it closes on a hidden tab, when the panel closes and when
+nothing processes. A `progress` event with a newer revision, or a `settled`
+event, reloads only that record, in place. After a closed stream (401, 403, 404,
+503, redirect), three errors without a message within 30 s, or 45 s without any
+event, the dialog falls back to reloading the list every 5 seconds and offers
+"Opnieuw live verbinden". An open stream keeps an Api replica awake, which costs
+a little while the dialog shows processing imports. Locally, `ng serve` proxies
+the stream like any other `/api` call.
+
 Optional chapter text/screenshot produces proposed definitions and pauses at
 `awaitingDefinitions`. Explicit approval resumes tagging. Every extracted
 question then requires human confirmation in `review`, including its answer
