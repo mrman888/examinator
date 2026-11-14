@@ -2,10 +2,13 @@ using Azure;
 
 namespace Examinator.Api;
 
-/// <summary>Live progress for one processing import, as sent in an SSE <c>progress</c> event.</summary>
+/// <summary>
+/// Live progress for one processing import, as sent in an SSE <c>progress</c> event. <c>Timing</c> carries the step log
+/// of the current run only (the record GET has all runs), and only when the progress belongs to the record's current attempt.
+/// </summary>
 public sealed record ImportProgressEvent(string ImportId, string State, string Revision, string Phase, int? Step, int? Total,
     string? Unit, int? ModelCalls, int? ModelCallBudget, string Message, DateTimeOffset? UpdatedAt, DateTimeOffset? HeartbeatAt,
-    DateTimeOffset ServerTime, bool Stale);
+    DateTimeOffset ServerTime, bool Stale, ImportTiming? Timing = null);
 
 /// <summary>Sent once when an import leaves the processing states (or was deleted); the client reloads that row.</summary>
 public sealed record ImportSettledEvent(string ImportId, string State, string? Revision);
@@ -135,7 +138,7 @@ public sealed class ImportProgressStream(IImportPersistence storage, TimeProvide
         if (Applies(record, progress))
             return new ImportProgressEvent(record.Id, record.State, record.Revision, progress!.Phase, progress.Step, progress.Total,
                 progress.Unit, progress.ModelCalls, progress.ModelCallBudget, progress.Message, progress.UpdatedAt, progress.HeartbeatAt,
-                now, now - progress.HeartbeatAt > options.HeartbeatTimeout);
+                now, progress.CompletedAt is null && now - progress.HeartbeatAt > options.HeartbeatTimeout, ImportTiming.From(progress, ImportTimingDetail.CurrentRun));
         if (record.State == "queued")
         {
             var stale = recordModified is { } since && now - since > options.QueuedTimeout;

@@ -5,6 +5,7 @@
       <progress [value]="value.step ?? 0" [max]="value.total ?? 1" [attr.aria-label]="label() + ': ' + text"></progress>
       <small>{{ text }}</small>
     }
+    @if (elapsed(); as time) { <small class="elapsed">{{ time }} verstreken</small> }
     @if (value.stale) { <small class="stale">Geen reactie</small> }
   }
 } @else {

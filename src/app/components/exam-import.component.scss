@@ -39,4 +39,10 @@ dialog::backdrop { background: rgba(15, 30, 20, .55); }
 .duplicates { border: 1px solid var(--line); border-radius: 5px; margin: 12px 0; padding: 4px 12px 12px; }
 .duplicates li { margin: 8px 0; }
 .row-progress { padding: 0 4px; }
+.row-times { color: #5b6b60; font-size: smaller; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.bulk-approve { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
+.bulk-approve p { margin: 0; flex: 1 1 200px; font-weight: 600; }
+.bulk-approve button.secondary { background: transparent; color: var(--ink); }
+.attention ul { margin: 6px 0 0; padding-left: 20px; }

@@ -36,6 +36,9 @@
             }
             <span>{{ stateLabel(record) }}</span>
             <small>{{ record.createdAt.slice(0, 10) }} · {{ record.id.slice(0, 8) }}</small>
+            @if (rowTimes().get(record.id); as times) {
+              <span class="row-times">Bijgewerkt: {{ times.updated }}@if (times.processed) { · {{ times.processed }}}</span>
+            }
           </button>
           @if (progressById().get(record.id); as rowProgress) {
             <app-import-progress class="row-progress" [progress]="rowProgress" [compact]="true" />
@@ -87,6 +90,42 @@
             <app-topic-editor [topics]="draftTopics()" [disabled]="busy() || record.state === 'published'"
               (topicsChanged)="changeDraftTopics($event)" />
           </details>
+          <app-import-summary [topics]="draftTopics()" [questions]="draftQuestions()" (questionSelected)="showQuestion($event)" />
+          @if (record.state === 'review') {
+            <div class="bulk-approve" role="group" aria-label="Alles goedkeuren">
+              <p class="bulk-count" role="status">{{ approvedCount() }} van {{ draftQuestions().length }} vragen goedgekeurd</p>
+              @if (approveAllPending()) {
+                <span>Alle {{ draftQuestions().length - approvedCount() }} nog niet goedgekeurde vragen goedkeuren zoals ze zijn voorgesteld?</span>
+                <button type="button" (click)="approveAll()" [disabled]="busy()">Ja, alles goedkeuren</button>
+                <button type="button" class="secondary" (click)="cancelApproveAll()">Annuleren</button>
+              } @else {
+                <button type="button" (click)="askApproveAll()" [disabled]="busy() || approvedCount() === draftQuestions().length">Alles goedkeuren</button>
+              }
+            </div>
+            @if (attention(); as attn) {
+              @if (attn.issues.length) {
+                <div class="warning attention" role="status">
+                  <strong>Deze vragen hebben nog aandacht nodig:</strong>
+                  <ul>
+                    @for (item of attn.issues.slice(0, attentionLimit); track item.id) {
+                      <li>Vraag {{ item.number }}: {{ item.issue }}</li>
+                    }
+                  </ul>
+                  @if (attn.issues.length > attentionLimit) {
+                    <details class="attention-more">
+                      <summary>Toon alle {{ attn.issues.length }} vragen</summary>
+                      <ul>
+                        @for (item of attn.issues.slice(attentionLimit); track item.id) {
+                          <li>Vraag {{ item.number }}: {{ item.issue }}</li>
+                        }
+                      </ul>
+                    </details>
+                  }
+                  @if (attn.unchecked) { <p>Nog {{ attn.unchecked }} {{ attn.unchecked === 1 ? 'vraag' : 'vragen' }} niet gecontroleerd.</p> }
+                </div>
+              }
+            }
+          }
           <label>Vraag bekijken
             <select #questionSelect [value]="activeQuestion()?.id ?? ''" (change)="selectedQuestionId.set(questionSelect.value)">
               @for (question of draftQuestions(); track question.id) {
@@ -95,7 +134,7 @@
             </select>
           </label>
           @if (activeQuestion(); as question) {
-            <fieldset [disabled]="busy() || record.state === 'published'">
+            <fieldset id="question-review" tabindex="-1" [disabled]="busy() || record.state === 'published'">
               <legend>Vraag {{ question.number }}</legend>
               <label>Korte titel <input #questionTitle [value]="question.title" maxlength="200"
                 (input)="editQuestion(question.id, 'title', questionTitle.value)" /></label>
@@ -141,6 +180,7 @@
           <app-import-progress [progress]="selectedProgress()" [connection]="connection()"
             [withDefinitions]="withDefinitions(record)" (reconnect)="reconnectLive()" />
         }
+        <app-import-steps [timing]="selectedTiming()" [createdAt]="record.createdAt" [live]="selectedProcessing()" />
         <div class="actions">
           @if (record.state === 'failed') {
             <p>Opnieuw verwerken kan extra Foundry-kosten veroorzaken.</p>

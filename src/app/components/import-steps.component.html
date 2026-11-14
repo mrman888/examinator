@@ -1,0 +1,40 @@
+<section class="steps" aria-labelledby="processing-steps-heading">
+  <h3 id="processing-steps-heading">Verwerkingsstappen</h3>
+  @if (timing(); as value) {
+    <p class="totals">
+      <span>{{ running() ? 'Verwerkingstijd tot nu toe' : 'Totale verwerkingstijd' }}: {{ total() }}</span>
+      @if (lead(); as leadTime) { <span>Doorlooptijd sinds upload: {{ leadTime }}</span> }
+    </p>
+    @if (value.earlierRunsUnknown) {
+      <p class="meta">Van eerdere pogingen is geen (volledige) stapgeschiedenis bewaard.</p>
+    }
+    @for (run of runs(); track run.number) {
+      <details class="run" [class.failed]="run.failed" [open]="$first">
+        <summary>{{ run.heading }}</summary>
+        <div class="table-scroll">
+          <table>
+            <caption class="visually-hidden">Stappen van poging {{ run.number }}</caption>
+            <thead>
+              <tr><th scope="col">Stap</th><th scope="col">Start</th><th scope="col">Duur</th><th scope="col">Details</th>
+                <th scope="col">Modelaanroepen</th><th scope="col">Resultaat</th></tr>
+            </thead>
+            <tbody>
+              @for (step of run.steps; track step.key) {
+                <tr [class.failed]="step.failed" [class.running]="step.running">
+                  <th scope="row">{{ step.label }}</th>
+                  <td>{{ step.start }}</td>
+                  <td>{{ step.duration }}</td>
+                  <td>{{ step.details }}@if (step.error) { <strong class="error-text">Fout: {{ step.error }}</strong> }</td>
+                  <td>{{ step.modelCalls }}</td>
+                  <td>{{ step.outcome }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </details>
+    }
+  } @else {
+    <p class="meta">Geen stapgeschiedenis beschikbaar voor deze import.</p>
+  }
+</section>

@@ -1,0 +1,35 @@
+<section class="summary" aria-labelledby="summary-heading">
+  <h3 id="summary-heading">Samenvatting</h3>
+  <p class="total" role="status">{{ summary().found }} vragen gevonden in totaal</p>
+  <p class="hint">Een vraag kan bij meerdere onderwerpen horen.</p>
+  <ul class="topics">
+    @for (row of summary().topics; track row.id) {
+      <li>
+        <strong>{{ row.title }}</strong> &mdash;
+        @if (row.questions.length) {
+          {{ count(row.questions.length) }}:
+          <span class="numbers">
+            @for (item of row.questions; track item.id) {
+              <button type="button" class="number" [attr.aria-label]="'Ga naar vraag ' + item.number"
+                (click)="questionSelected.emit(item.id)">{{ item.number }}</button>
+            }
+          </span>
+        } @else {
+          <span class="none">Geen vragen gevonden</span>
+        }
+      </li>
+    }
+  </ul>
+  <p class="not-relevant">Niet relevant voor de gekozen onderwerpen: {{ count(summary().notRelevant.length) }}</p>
+  @if (summary().notRelevant.length) {
+    <details>
+      <summary>Toon vraagnummers</summary>
+      <span class="numbers">
+        @for (item of summary().notRelevant; track item.id) {
+          <button type="button" class="number" [attr.aria-label]="'Ga naar vraag ' + item.number"
+            (click)="questionSelected.emit(item.id)">{{ item.number }}</button>
+        }
+      </span>
+    </details>
+  }
+</section>

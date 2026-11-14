@@ -50,6 +50,49 @@ export interface ImportRecord {
   contextDocumentId?: string | null;
   contextText?: string;
   createdAt: string;
+  /** Last record write; missing on responses from before it existed. */
+  updatedAt?: string | null;
+  /** Processing time and step log (all runs for one record, no runs in the list); null without a step log. */
+  timing?: ImportTiming | null;
+}
+
+/** `throttled`: a Foundry rate-limit wait (phase `throttled`); null while the step runs. */
+export type ImportStepOutcome = 'ok' | 'throttled' | 'failed' | 'cancelled' | 'interrupted';
+/** null while the run is going. */
+export type ImportRunOutcome = 'awaitingDefinitions' | 'review' | 'failed' | 'cancelled' | 'interrupted';
+
+/** One logged step of a processing run, with its latest message, step/total and model calls. */
+export interface ImportPhaseTiming {
+  phase: string;
+  startedAt: string;
+  endedAt: string | null;
+  message: string | null;
+  step: number | null;
+  total: number | null;
+  modelCalls: number;
+  outcome: ImportStepOutcome | null;
+  error: string | null;
+}
+
+/** One processing run; `number` counts the runs of the import, `attempt` is the record's attempt counter. */
+export interface ImportRunTiming {
+  number: number;
+  attempt: number;
+  startedAt: string;
+  endedAt: string | null;
+  outcome: ImportRunOutcome | null;
+  phases: ImportPhaseTiming[];
+}
+
+/** See server/README.md: run durations are summed, so waiting between runs is excluded. */
+export interface ImportTiming {
+  processingStartedAt: string | null;
+  completedAt: string | null;
+  outcome: ImportRunOutcome | null;
+  processingMilliseconds: number | null;
+  earlierProcessingMilliseconds: number | null;
+  earlierRunsUnknown: boolean;
+  runs: ImportRunTiming[];
 }
 
 export interface DuplicateImport {
@@ -152,6 +195,39 @@ function question(value: unknown): value is DraftQuestion {
     typeof value['needsReview'] === 'boolean' && strings(value['warnings']);
 }
 
+const STEP_OUTCOMES: readonly unknown[] = [null, 'ok', 'throttled', 'failed', 'cancelled', 'interrupted'];
+const RUN_OUTCOMES: readonly unknown[] = [null, 'awaitingDefinitions', 'review', 'failed', 'cancelled', 'interrupted'];
+
+function optionalString(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function optionalCount(value: unknown): value is number | null | undefined {
+  return value === undefined || value === null || nonNegativeInteger(value);
+}
+
+function phaseTiming(value: unknown): value is ImportPhaseTiming {
+  return object(value) && typeof value['phase'] === 'string' && typeof value['startedAt'] === 'string' &&
+    optionalString(value['endedAt']) && optionalString(value['message']) && optionalCount(value['step']) &&
+    optionalCount(value['total']) && nonNegativeInteger(value['modelCalls']) && STEP_OUTCOMES.includes(value['outcome'] ?? null) &&
+    optionalString(value['error']);
+}
+
+function runTiming(value: unknown): value is ImportRunTiming {
+  return object(value) && nonNegativeInteger(value['number']) && nonNegativeInteger(value['attempt']) &&
+    typeof value['startedAt'] === 'string' && optionalString(value['endedAt']) && RUN_OUTCOMES.includes(value['outcome'] ?? null) &&
+    Array.isArray(value['phases']) && value['phases'].every(phaseTiming);
+}
+
+/** Accepts a missing or null timing (older responses); rejects malformed ones. */
+function timing(value: unknown): value is ImportTiming | null | undefined {
+  if (value === undefined || value === null) return true;
+  return object(value) && optionalString(value['processingStartedAt']) && optionalString(value['completedAt']) &&
+    RUN_OUTCOMES.includes(value['outcome'] ?? null) && optionalCount(value['processingMilliseconds']) &&
+    optionalCount(value['earlierProcessingMilliseconds']) && typeof value['earlierRunsUnknown'] === 'boolean' &&
+    Array.isArray(value['runs']) && value['runs'].every(runTiming);
+}
+
 function importRecord(value: unknown): value is ImportRecord {
   const states: string[] = ['queued', 'extracting', 'awaitingDefinitions', 'aligning', 'tagging',
     'review', 'published', 'failed', 'cancelled'];
@@ -163,7 +239,8 @@ function importRecord(value: unknown): value is ImportRecord {
     typeof value['revision'] === 'string' && typeof value['examDocumentId'] === 'string' &&
     typeof value['answerDocumentId'] === 'string' && typeof value['createdAt'] === 'string' &&
     (value['contextDocumentId'] === undefined || value['contextDocumentId'] === null || typeof value['contextDocumentId'] === 'string') &&
-    (value['contextText'] === undefined || typeof value['contextText'] === 'string');
+    (value['contextText'] === undefined || typeof value['contextText'] === 'string') &&
+    optionalString(value['updatedAt']) && timing(value['timing']);
 }
 
 function documentPath(value: unknown): value is string {
@@ -280,6 +357,8 @@ export interface ImportProgressEvent {
   heartbeatAt: string | null;
   serverTime: string;
   stale: boolean;
+  /** The step log of the current run only; earlier runs come with the record. */
+  timing?: ImportTiming | null;
 }
 
 export interface ImportSettledEvent {
@@ -308,7 +387,7 @@ function progressEvent(value: unknown): value is ImportProgressEvent {
     nullableCount(value['step']) && nullableCount(value['total']) && nullableString(value['unit']) &&
     nullableCount(value['modelCalls']) && nullableCount(value['modelCallBudget']) &&
     typeof value['message'] === 'string' && nullableString(value['updatedAt']) && nullableString(value['heartbeatAt']) &&
-    typeof value['serverTime'] === 'string' && typeof value['stale'] === 'boolean';
+    typeof value['serverTime'] === 'string' && typeof value['stale'] === 'boolean' && timing(value['timing']);
 }
 
 function settledEvent(value: unknown): value is ImportSettledEvent {

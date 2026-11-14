@@ -113,11 +113,12 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                     await stream.CopyToAsync(bytes, cancellationToken);
                     context = $"data:{document.ContentType};base64,{Convert.ToBase64String(bytes.ToArray())}";
                 }
-                work = await BeginCall(id, work, "chapter-definitions", cancellationToken);
                 await Report(reporter => reporter.PhaseAsync("definitions", "Hoofdstukdefinities voorstellen", cancellationToken));
+                work = await BeginCall(id, work, "chapter-definitions", cancellationToken);
                 var topics = await model.PrepareTopicsAsync(record, context, cancellationToken);
                 record = await storage.WriteAsync(record with { Topics = topics, State = "awaitingDefinitions" }, record.Revision, cancellationToken);
                 await storage.WriteWorkAsync(id, work with { ContextPrepared = true, PendingCall = null }, cancellationToken);
+                await Report(reporter => reporter.CompleteAsync("awaitingDefinitions", cancellationToken));
                 return;
             }
             record = await SaveState(record, "aligning", cancellationToken);
@@ -136,21 +137,23 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             var answerImages = await Render(record.AnswerDocumentId, answerPages, "answers", cancellationToken);
             if (work.ExamInventory is null)
             {
-                work = await BeginCall(id, work, "exam-inventory", cancellationToken);
                 await Report(reporter => reporter.PhaseAsync("inventory", "Vragen inventariseren in het examen", cancellationToken, 1, 2, "document"));
+                work = await BeginCall(id, work, "exam-inventory", cancellationToken);
                 var inventory = await model.InventoryAsync(record.Metadata, work.Exam, examImages, "exam", cancellationToken);
                 work = work with { ExamInventory = inventory, PendingCall = null };
                 await storage.WriteWorkAsync(id, work, cancellationToken);
             }
             if (work.AnswerInventory is null)
             {
-                work = await BeginCall(id, work, "answer-inventory", cancellationToken);
                 await Report(reporter => reporter.StepAsync("inventory", 2, 2, "document",
                     "Vragen inventariseren in het correctievoorschrift", cancellationToken));
+                work = await BeginCall(id, work, "answer-inventory", cancellationToken);
                 var inventory = await model.InventoryAsync(record.Metadata, work.Answers, answerImages, "answers", cancellationToken);
                 work = work with { AnswerInventory = inventory, PendingCall = null };
                 await storage.WriteWorkAsync(id, work, cancellationToken);
             }
+            var found = work.ExamInventory?.QuestionCount ?? 0;
+            await Report(reporter => reporter.NoteAsync(found == 1 ? "1 vraag gevonden" : $"{found} vragen gevonden", cancellationToken));
             if (work.ExamInventory is null || work.AnswerInventory is null ||
                 work.ExamInventory.SubjectId != record.Metadata.SubjectId ||
                 work.AnswerInventory.SubjectId != record.Metadata.SubjectId ||
@@ -188,22 +191,28 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             }
             if (record.Questions.Length == 0)
                 record = await storage.WriteAsync(record with { Questions = work.Inventory }, record.Revision, cancellationToken);
+            var aligned = work.Inventory.Count(question => question.AnswerPage is not null);
+            await Report(reporter => reporter.NoteAsync($"{aligned} van {work.Inventory.Length} antwoorden gekoppeld", cancellationToken));
             record = await SaveState(record, "tagging", cancellationToken);
             for (var index = work.ClassifiedCount; index < record.Questions.Length; index++)
             {
                 var current = await storage.ReadAsync(id, cancellationToken);
-                if (current?.State == "cancelled") return;
+                if (current?.State == "cancelled")
+                {
+                    await Report(reporter => reporter.CompleteAsync("cancelled", cancellationToken));
+                    return;
+                }
                 var question = record.Questions[index];
                 var blocks = work.Blocks.Where(block =>
                     block.Id.StartsWith("exam:", StringComparison.Ordinal) && block.Page >= question.ExamPage && block.Page <= question.ExamEndPage ||
                     block.Id.StartsWith("answers:", StringComparison.Ordinal) && block.Page >= question.AnswerPage && block.Page <= question.AnswerEndPage).ToArray();
                 var images = examImages.Where(image => image.Page >= question.ExamPage && image.Page <= question.ExamEndPage)
                     .Concat(answerImages.Where(image => image.Page >= question.AnswerPage && image.Page <= question.AnswerEndPage)).ToArray();
-                work = await BeginCall(id, work, $"question-{question.Number}", cancellationToken);
                 var step = index + 1;
                 var total = record.Questions.Length;
                 await Report(reporter => reporter.StepAsync("tagging", step, total, "vraag",
                     $"Vraag {step} van {total}: onderwerpen toekennen", cancellationToken));
+                work = await BeginCall(id, work, $"question-{question.Number}", cancellationToken);
                 var result = await model.ClassifyAsync(question, record.Topics, blocks, images, cancellationToken);
                 var questions = record.Questions.ToArray();
                 questions[index] = question with
@@ -223,6 +232,7 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             }
             await Report(reporter => reporter.PhaseAsync("finishing", "Resultaten opslaan voor beoordeling", cancellationToken));
             await SaveState(record, "review", cancellationToken);
+            await Report(reporter => reporter.CompleteAsync("review", cancellationToken));
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or ArgumentException or HttpRequestException or
             System.Text.Json.JsonException or OperationCanceledException or InvalidOperationException or
@@ -230,13 +240,12 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
         {
             logger.LogError(exception, "Import {ImportId} failed with {ErrorType}.", id, exception.GetType().Name);
             var latest = await storage.ReadAsync(id, CancellationToken.None);
+            var error = exception is InvalidDataException ? exception.Message :
+                "De verwerking is onderbroken. Controleer document/configuratie en kies bewust opnieuw verwerken; dit kan modelkosten veroorzaken.";
             if (latest is not null && latest.State is not ("cancelled" or "published" or "review"))
-                await storage.WriteAsync(latest with
-                {
-                    State = "failed",
-                    Error = exception is InvalidDataException ? exception.Message :
-                        "De verwerking is onderbroken. Controleer document/configuratie en kies bewust opnieuw verwerken; dit kan modelkosten veroorzaken."
-                }, latest.Revision, CancellationToken.None);
+                await storage.WriteAsync(latest with { State = "failed", Error = error }, latest.Revision, CancellationToken.None);
+            var outcome = latest?.State switch { null or "published" or "review" => null, "cancelled" => "cancelled", _ => "failed" };
+            if (outcome is not null) await Report(reporter => reporter.CompleteAsync(outcome, CancellationToken.None, error));
         }
         finally
         {

@@ -26,7 +26,8 @@ public sealed class ImportStorageTests
             new BlobClientOptions { Transport = transport });
         var queue = new QueueClient(new Uri("https://storage.example/exam-imports"), credential,
             new QueueClientOptions { Transport = transport });
-        var storage = new ImportStorage(records, documents, queue);
+        var now = new DateTimeOffset(2026, 11, 14, 15, 2, 0, TimeSpan.Zero);
+        var storage = new ImportStorage(records, documents, queue) { Time = new ManualTime(now) };
         var record = new ImportRecord(Guid.NewGuid().ToString("N"), "queued",
             new("biology", "havo", 2025, 1, "", "", []), [], [], [], null, "",
             Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow);
@@ -37,6 +38,10 @@ public sealed class ImportStorageTests
         Assert.Equal("\"test-etag\"", handler.IfMatch);
         Assert.DoesNotContain("test-etag", handler.Body);
         Assert.Contains("\"state\":\"review\"", handler.Body);
+        Assert.Equal(now, created.UpdatedAt);
+        Assert.Contains("\"updatedAt\":\"2026-11-14T15:02:00+00:00\"", handler.Body);
+        await storage.WriteAsync(created with { Timing = new ImportTiming(null, null, null, null, null, false, []) }, created.Revision, default);
+        Assert.Contains("\"timing\":null", handler.Body);
     }
 
     [Fact]
@@ -113,6 +118,8 @@ public sealed class ImportStorageTests
         handler.Body = JsonSerializer.Serialize(Sample(id), new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var record = await storage.ReadIfChangedAsync(id, null, default);
         Assert.Equal("\"p1\"", record!.Value!.Revision);
+        Assert.NotNull(record.Value.UpdatedAt);
+        Assert.Equal(record.LastModified, record.Value.UpdatedAt);
         Assert.Equal($"/exam-imports/jobs/{id}.json", handler.Requests.Last().Path);
         Assert.Null(await storage.ReadIfChangedAsync(id, "\"p1\"", default));
 

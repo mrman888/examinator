@@ -208,6 +208,112 @@ describe('import review and catalog integration', () => {
     expect(TestBed.inject(PdfPreviewService).renderPage).toHaveBeenCalledWith('/api/documents/exam-1', 2, expect.any(HTMLCanvasElement));
   });
 
+  describe('bulk approval', () => {
+    const base = record.questions[0];
+    const many: ImportRecord = { ...record, questions: [
+      { ...base, id: 'question-1', number: 1 },
+      { ...base, id: 'question-2', number: 2 },
+      { ...base, id: 'question-3', number: 3, answerPage: null, answerEndPage: null },
+    ] };
+    const button = (root: HTMLElement, text: string) => [...root.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === text)!;
+    const patches = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.filter(([, o]) => (o as RequestInit | undefined)?.method === 'PATCH');
+
+    it('renders the summary above the bulk-approve row', async () => {
+      const { root } = await review(many);
+      const summary = root.querySelector('app-import-summary')!;
+      const bulk = root.querySelector('.bulk-approve')!;
+      expect(summary.compareDocumentPosition(bulk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('does not list unchecked questions for a fresh import', async () => {
+      const { root } = await review({ ...many, questions: many.questions.slice(0, 2) });
+      expect(root.querySelector('.attention')).toBeNull();
+      expect(root.textContent).not.toContain('nog niet gecontroleerd');
+    });
+
+    it('lists real issues only, with the unchecked count', async () => {
+      const { root } = await review(many);
+      const text = root.querySelector('.attention')!.textContent!;
+      expect(text).toContain('Vraag 3: antwoordpagina ontbreekt');
+      expect(text).not.toContain('Vraag 1');
+      expect(text).toContain('Nog 2 vragen niet gecontroleerd');
+    });
+
+    it('shows the first 8 issues and puts the rest in a details element', async () => {
+      const broken = Array.from({ length: 10 }, (_, index) => ({
+        ...base, id: `question-${index + 1}`, number: index + 1, answerPage: null, answerEndPage: null }));
+      const { root } = await review({ ...many, questions: broken });
+      const direct = root.querySelectorAll('.attention > ul > li');
+      expect(direct).toHaveLength(8);
+      const more = root.querySelector('.attention-more')!;
+      expect(more.querySelector('summary')!.textContent).toContain('Toon alle 10 vragen');
+      expect(more.querySelectorAll('li')).toHaveLength(2);
+      expect(more.textContent).toContain('Vraag 10: antwoordpagina ontbreekt');
+    });
+
+    it('asks for confirmation and sends nothing when cancelled', async () => {
+      const { fixture, root, fetch } = await review(many);
+      button(root, 'Alles goedkeuren').click();
+      await fixture.whenStable();
+      expect(root.textContent).toContain('goedkeuren zoals ze zijn voorgesteld?');
+      button(root, 'Annuleren').click();
+      await fixture.whenStable();
+      expect(patches(fetch)).toHaveLength(0);
+      expect(root.textContent).toContain('0 van 3 vragen goedgekeurd');
+    });
+
+    it('approves valid questions, skips invalid ones, lists them and saves with the revision', async () => {
+      const { fixture, root, fetch } = await review(many);
+      button(root, 'Alles goedkeuren').click();
+      await fixture.whenStable();
+      button(root, 'Ja, alles goedkeuren').click();
+      await fixture.whenStable();
+      const [call] = patches(fetch);
+      const body = JSON.parse(String((call[1] as RequestInit).body));
+      expect(body.revision).toBe('"v1"');
+      expect(body.questions.map((q: { needsReview: boolean }) => q.needsReview)).toEqual([false, false, true]);
+      expect(root.textContent).toContain('2 van 3 vragen goedgekeurd');
+      expect(root.querySelector('.attention')!.textContent).toContain('Vraag 3: antwoordpagina ontbreekt');
+      expect(button(root, 'Goedkeuren en publiceren').disabled).toBe(true);
+    });
+
+    it('enables publishing straight after approving everything and allows un-approving one question', async () => {
+      const { fixture, root } = await review({ ...many, questions: many.questions.slice(0, 2) });
+      button(root, 'Alles goedkeuren').click();
+      await fixture.whenStable();
+      button(root, 'Ja, alles goedkeuren').click();
+      await fixture.whenStable();
+      expect(root.textContent).toContain('2 van 2 vragen goedgekeurd');
+      expect(root.querySelector('.attention')).toBeNull();
+      expect(button(root, 'Goedkeuren en publiceren').disabled).toBe(false);
+      const check = root.querySelector<HTMLInputElement>('.review > fieldset .review-check input')!;
+      check.checked = false;
+      check.dispatchEvent(new Event('change'));
+      await fixture.whenStable();
+      expect(root.textContent).toContain('1 van 2 vragen goedgekeurd');
+      expect(button(root, 'Goedkeuren en publiceren').disabled).toBe(true);
+    });
+
+    it('shows the stale-revision message on 409 and keeps the draft unapproved on the server', async () => {
+      const fetch = vi.fn().mockImplementation((url: string, options?: RequestInit) =>
+        Promise.resolve(options?.method === 'PATCH' ? new Response(null, { status: 409 })
+          : Response.json(url === '/api/imports' ? [many] : many)));
+      vi.stubGlobal('fetch', fetch);
+      const fixture = TestBed.createComponent(ExamImportComponent);
+      await fixture.whenStable();
+      const root: HTMLElement = fixture.nativeElement;
+      root.querySelector<HTMLButtonElement>('.import-item')!.click();
+      await fixture.whenStable();
+      button(root, 'Alles goedkeuren').click();
+      await fixture.whenStable();
+      button(root, 'Ja, alles goedkeuren').click();
+      await fixture.whenStable();
+      expect(root.querySelector('.error')!.textContent).toContain('De import is gewijzigd');
+      expect(root.textContent).not.toContain('vragen zijn goedgekeurd');
+    });
+  });
+
   it('pauses screenshot-derived definition processing for explicit confirmation', async () => {
     const { fixture, root, fetch } = await review({ ...record, state: 'awaitingDefinitions', questions: [] });
     expect(root.querySelector('.previews')).toBeNull();
@@ -342,7 +448,7 @@ describe('import review and catalog integration', () => {
       button(root, 'Opnieuw verwerken').click();
       await fixture.whenStable();
       expect(ids(root)).toEqual(before);
-      expect(root.querySelectorAll('.import-item span')[3].textContent).toBe('In wachtrij');
+      expect(root.querySelectorAll('.import-item span:not(.row-times)')[3].textContent).toBe('In wachtrij');
     });
 
     it('asks for confirmation before deleting and cancels without a request', async () => {
@@ -411,6 +517,43 @@ describe('import review and catalog integration', () => {
     });
   });
 
+  describe('summary', () => {
+    const base = record.questions[0];
+    const withSecond: ImportRecord = { ...record, questions: [
+      { ...base, id: 'question-1', number: 1 },
+      { ...base, id: 'question-2', number: 2, title: 'Andere vraag', topicIds: [] },
+    ] };
+
+    it('summarises topics and not relevant questions and follows topic edits', async () => {
+      const { fixture, root } = await review(withSecond);
+      const summary = () => root.querySelector('app-import-summary')!;
+      expect(summary().querySelector('h3')!.textContent).toBe('Samenvatting');
+      expect(summary().querySelector('.topics li')!.textContent!.replace(/\s+/g, ' ')).toContain('Celdeling — 1 vraag: 1');
+      expect(summary().querySelector('.not-relevant')!.textContent).toContain('1 vraag');
+      const tags = root.querySelectorAll<HTMLInputElement>('.review > fieldset .tags input');
+      tags[0].checked = false;
+      tags[0].dispatchEvent(new Event('change'));
+      await fixture.whenStable();
+      expect(summary().querySelector('.topics li')!.textContent).toContain('Geen vragen gevonden');
+      expect(summary().querySelector('.not-relevant')!.textContent).toContain('2 vragen');
+      expect(summary().querySelector('.total')!.textContent).toContain('0 vragen gevonden in totaal');
+    });
+
+    it('selects a question from the summary', async () => {
+      const { fixture, root } = await review(withSecond);
+      const open = root.querySelector<HTMLElement>('app-import-summary details')!;
+      expect(root.querySelector('.review > fieldset legend')!.textContent).toBe('Vraag 1');
+      open.querySelector<HTMLButtonElement>('.number')!.click();
+      await fixture.whenStable();
+      expect(root.querySelector('.review > fieldset legend')!.textContent).toBe('Vraag 2');
+    });
+
+    it('shows the summary for a published import', async () => {
+      const { root } = await review({ ...record, state: 'published' });
+      expect(root.querySelector('app-import-summary .total')!.textContent).toContain('1 vragen gevonden in totaal');
+    });
+  });
+
   describe('live progress', () => {
     const tagging: ImportRecord = { ...record, id: 'import-busy', state: 'tagging', revision: '"v3"', questions: [] };
     const done: ImportRecord = { ...record, id: 'import-done', createdAt: '2026-11-12T09:00:00Z', state: 'review' };
@@ -458,6 +601,52 @@ describe('import review and catalog integration', () => {
       expect(rows[1].querySelector('app-import-progress')!.textContent).toContain('Wachtrij');
       expect(rows[2].querySelector('app-import-progress')).toBeNull();
       expect(stream.sources).toHaveLength(1);
+    });
+
+    const run = (number: number, outcome: 'review' | 'failed' | 'awaitingDefinitions', startedAt: string, endedAt: string) => ({
+      number, attempt: 1, startedAt, endedAt, outcome, phases: [{ phase: 'starting', startedAt, endedAt, message: 'Verwerking gestart',
+        step: null, total: null, modelCalls: 0, outcome: outcome === 'failed' ? 'failed' as const : 'ok' as const,
+        error: outcome === 'failed' ? 'Foundry gaf HTTP 500 terug.' : null }],
+    });
+    const timed: ImportRecord = { ...done, id: 'import-timed', createdAt: '2026-11-13T12:00:00Z',
+      updatedAt: new Date(2026, 10, 14, 15, 2).toISOString(),
+      timing: { processingStartedAt: '2026-11-14T14:00:00Z', completedAt: '2026-11-14T14:56:12Z', outcome: 'review',
+        processingMilliseconds: 372_000, earlierProcessingMilliseconds: 30_000, earlierRunsUnknown: false, runs: [] } };
+    const old: ImportRecord = { ...record, id: 'import-old', state: 'published', createdAt: '2026-11-10T09:00:00Z' };
+
+    it('shows the last update and the processing time in list rows, and onbekend for older imports', async () => {
+      const { fixture, root } = await open([tagging, timed, old]);
+      stream.latest().open();
+      stream.latest().emit('progress', event({ timing: { processingStartedAt: '2026-11-14T13:30:00Z', completedAt: null,
+        outcome: null, processingMilliseconds: null, earlierProcessingMilliseconds: 0, earlierRunsUnknown: false,
+        runs: [{ ...run(1, 'review', '2026-11-14T13:30:00Z', ''), endedAt: null, outcome: null }] } }));
+      await fixture.whenStable();
+      const rows = [...root.querySelectorAll('.import-row')];
+      expect(rows[0].querySelector('app-import-progress')!.textContent).toContain('verstreken');
+      expect(rows[0].querySelector('.row-times')!.textContent).not.toContain('Verwerkt in');
+      expect(rows[1].querySelector('.row-times')!.textContent!.replace(/\s+/g, ' ').trim())
+        .toBe('Bijgewerkt: 14-11-2026 15:02 · Verwerkt in 6 min 12 s');
+      expect(rows[2].querySelector('.row-times')!.textContent!.replace(/\s+/g, ' ').trim())
+        .toBe('Bijgewerkt: onbekend · Verwerkingstijd onbekend');
+    });
+
+    it('lets every settled import show its processing steps, newest run expanded', async () => {
+      const detail: ImportRecord = { ...timed, timing: { ...timed.timing!, runs: [
+        run(1, 'failed', '2026-11-14T14:00:00Z', '2026-11-14T14:00:30Z'),
+        run(2, 'review', '2026-11-14T14:50:30Z', '2026-11-14T14:56:12Z')] } };
+      const { fixture, root } = await open([timed, old], { 'import-timed': detail });
+      root.querySelector<HTMLButtonElement>('.import-item')!.click();
+      await fixture.whenStable();
+      const steps = root.querySelector('.review app-import-steps')!;
+      expect(steps.textContent).toContain('Verwerkingsstappen');
+      expect(steps.textContent).toContain('Totale verwerkingstijd: 6 min 12 s');
+      const runs = [...steps.querySelectorAll<HTMLDetailsElement>('details.run')];
+      expect(runs.map((item) => item.open)).toEqual([true, false]);
+      expect(runs[1].querySelector('tr.failed')!.textContent).toContain('Fout: Foundry gaf HTTP 500 terug.');
+
+      root.querySelectorAll<HTMLButtonElement>('.import-item')[1].click();
+      await fixture.whenStable();
+      expect(root.querySelector('.review app-import-steps')!.textContent).toContain('Geen stapgeschiedenis beschikbaar voor deze import');
     });
 
     it('shows the detail stepper, counts, connection and a polite announcement for the selected import', async () => {
@@ -517,6 +706,19 @@ describe('import review and catalog integration', () => {
       expect(root.querySelectorAll('.import-item span')[0].textContent).toBe('Klaar voor beoordeling');
       expect(root.querySelector('.import-row app-import-progress')).toBeNull();
       expect(stream.latest().closed).toBe(true);
+    });
+
+    it('shows the summary immediately when the selected import settles into review', async () => {
+      const reviewed = { ...tagging, state: 'review' as const, revision: '"v9"', questions: record.questions };
+      const { fixture, root } = await open([tagging], { 'import-busy': tagging });
+      root.querySelector<HTMLButtonElement>('.import-item')!.click();
+      await fixture.whenStable();
+      expect(root.querySelector('app-import-summary')).toBeNull();
+      const fetch = vi.mocked(globalThis.fetch);
+      fetch.mockImplementation(() => Promise.resolve(Response.json(reviewed)));
+      stream.latest().emit('settled', { importId: 'import-busy', state: 'review', revision: '"v9"' });
+      await fixture.whenStable();
+      expect(root.querySelector('app-import-summary .total')!.textContent).toContain('1 vragen gevonden in totaal');
     });
 
     it('removes a row whose import was deleted elsewhere', async () => {

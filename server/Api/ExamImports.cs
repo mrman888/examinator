@@ -51,7 +51,7 @@ public sealed class ExamImports(IImportPersistence storage, IPdfDownloader downl
 
     public async Task<ImportRecord> ReprocessAsync(string sourceId, IFormCollection form, CancellationToken cancellationToken)
     {
-        var source = await GetAsync(sourceId, cancellationToken);
+        var source = await RequireAsync(sourceId, cancellationToken);
         var metadata = ParseMetadata(form);
         if (form.Files.Count > 1 || form.Files.Any(file => file.Name != "context"))
             throw new ImportProblem(400, "Alleen een screenshot kan worden toegevoegd bij opnieuw verwerken.");
@@ -79,9 +79,39 @@ public sealed class ExamImports(IImportPersistence storage, IPdfDownloader downl
         return await DispatchAsync(record, cancellationToken);
     }
 
-    public Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken) => storage.ListAsync(cancellationToken);
+    public async Task<ImportRecord[]> ListAsync(CancellationToken cancellationToken)
+    {
+        var records = await storage.ListAsync(cancellationToken);
+        var result = new ImportRecord[records.Length];
+        await Parallel.ForEachAsync(Enumerable.Range(0, records.Length),
+            new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = cancellationToken },
+            async (index, token) => result[index] = await WithTimingAsync(records[index], token, ImportTimingDetail.Summary));
+        return result;
+    }
 
-    public async Task<ImportRecord> GetAsync(string id, CancellationToken cancellationToken)
+    public async Task<ImportRecord> GetAsync(string id, CancellationToken cancellationToken) =>
+        await WithTimingAsync(await RequireAsync(id, cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Adds the processing time from the progress blob: the list gets the summary only, a single record the step log
+    /// of all runs. A missing or unreadable blob leaves it null.
+    /// </summary>
+    private async Task<ImportRecord> WithTimingAsync(ImportRecord record, CancellationToken cancellationToken,
+        ImportTimingDetail detail = ImportTimingDetail.AllRuns)
+    {
+        try
+        {
+            var progress = await storage.ReadProgressAsync(record.Id, null, cancellationToken);
+            return record with { Timing = ImportTiming.From(progress?.Value, detail) };
+        }
+        catch (Exception exception) when (exception is RequestFailedException or JsonException or InvalidDataException)
+        {
+            logger.LogWarning("Processing time for import {ImportId} could not be read: {ErrorType}.", record.Id, exception.GetType().Name);
+            return record;
+        }
+    }
+
+    private async Task<ImportRecord> RequireAsync(string id, CancellationToken cancellationToken)
     {
         if (!Guid.TryParseExact(id, "N", out _)) throw new ImportProblem(404, "De import bestaat niet.");
         return await storage.ReadAsync(id, cancellationToken) ?? throw new ImportProblem(404, "De import bestaat niet.");
@@ -89,7 +119,7 @@ public sealed class ExamImports(IImportPersistence storage, IPdfDownloader downl
 
     public async Task<ImportRecord> UpdateAsync(string id, string action, object update, CancellationToken cancellationToken)
     {
-        var record = await GetAsync(id, cancellationToken);
+        var record = await RequireAsync(id, cancellationToken);
         var work = await storage.ReadWorkAsync(id, cancellationToken);
         ImportRecord next;
         try
@@ -109,7 +139,7 @@ public sealed class ExamImports(IImportPersistence storage, IPdfDownloader downl
         }
         catch (InvalidOperationException) { throw new ImportProblem(409, "De importstatus of versie is gewijzigd. Vernieuw de gegevens."); }
         catch (InvalidDataException) { throw new ImportProblem(400, "De vragen, onderwerpdefinities, documentidentiteit of antwoordkoppelingen zijn nog niet geldig."); }
-        if (action == "publish") return await storage.PublishAsync(next, cancellationToken);
+        if (action == "publish") return await WithTimingAsync(await storage.PublishAsync(next, cancellationToken), cancellationToken);
         if (action == "retry" && work is not null)
             await storage.WriteWorkAsync(id, work with { PendingCall = null }, cancellationToken);
         if (action == "confirm-definitions" && work is not null)
@@ -121,12 +151,12 @@ public sealed class ExamImports(IImportPersistence storage, IPdfDownloader downl
             }, cancellationToken);
         next = await storage.WriteAsync(next, record.Revision, cancellationToken);
         if (action is "retry" or "confirm-definitions") next = await DispatchAsync(next, cancellationToken);
-        return next;
+        return await WithTimingAsync(next, cancellationToken);
     }
 
     public async Task DeleteAsync(string id, CancellationToken cancellationToken)
     {
-        var record = await GetAsync(id, cancellationToken);
+        var record = await RequireAsync(id, cancellationToken);
         if (record.State == "published")
             throw new ImportProblem(409, "Een gepubliceerde import kan niet worden verwijderd.");
         if (record.State is "extracting" or "aligning" or "tagging" || await storage.IsLeasedAsync(id, cancellationToken))

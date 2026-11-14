@@ -136,6 +136,198 @@ public sealed class ImportProgressReporterTests
     }
 }
 
+public sealed class ImportStepLogTests
+{
+    private static readonly DateTimeOffset Start = new(2026, 11, 14, 14, 32, 0, TimeSpan.Zero);
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private static (ImportProgressReporter Reporter, MemoryImportStore Store, ManualTime Time) Create(MemoryImportStore? store = null,
+        ManualTime? time = null)
+    {
+        store ??= new MemoryImportStore();
+        time ??= new ManualTime(Start);
+        return (new ImportProgressReporter(store, time, NullLogger<ImportProgressReporter>.Instance), store, time);
+    }
+
+    [Fact]
+    public async Task EveryPhaseChangeClosesTheOpenStepWithItsDetails()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var (reporter, store, time) = Create();
+        await reporter.StartAsync(id, 1, 0, 64, default);
+        time.Advance(TimeSpan.FromSeconds(5));
+        await reporter.PhaseAsync("extracting", "Examen-PDF uitlezen (1 van 2)", default, 1, 2, "document");
+        time.Advance(TimeSpan.FromSeconds(4));
+        await reporter.StepAsync("extracting", 2, 2, "document", "Correctievoorschrift uitlezen (2 van 2)", default);
+        time.Advance(TimeSpan.FromSeconds(8));
+        await reporter.PhaseAsync("inventory", "Vragen inventariseren in het examen", default, 1, 2, "document");
+        reporter.ModelCalls(1);
+        reporter.ModelCalls(2);
+        await reporter.NoteAsync("48 vragen gevonden", default);
+        time.Advance(TimeSpan.FromSeconds(20));
+        await reporter.PhaseAsync("aligning", "Antwoorden koppelen", default);
+        var running = store.Progress(id)!;
+        Assert.Equal(["starting", "extracting", "inventory", "aligning"], running.Phases!.Select(p => p.Phase));
+        Assert.Null(running.Phases![^1].EndedAt);
+        Assert.Null(running.Phases![^1].Outcome);
+        Assert.Null(running.CompletedAt);
+
+        time.Advance(TimeSpan.FromSeconds(3));
+        await reporter.CompleteAsync("review", default);
+        var done = store.Progress(id)!;
+        Assert.Equal(Start, done.AttemptStartedAt);
+        Assert.Equal(Start.AddSeconds(40), done.CompletedAt);
+        Assert.Equal("review", done.Outcome);
+        Assert.Equal(1, done.Run);
+        var extracting = done.Phases![1];
+        Assert.Equal((Start.AddSeconds(5), Start.AddSeconds(17)), (extracting.StartedAt, extracting.EndedAt!.Value));
+        Assert.Equal(("Correctievoorschrift uitlezen (2 van 2)", 2, 2, "ok"), (extracting.Message, extracting.Step, extracting.Total, extracting.Outcome));
+        var inventory = done.Phases[2];
+        Assert.Equal(("48 vragen gevonden", 2, "ok"), (inventory.Message, inventory.ModelCalls, inventory.Outcome));
+        Assert.Equal(0, done.Phases[1].ModelCalls);
+        Assert.All(done.Phases, p => Assert.Equal("ok", p.Outcome));
+
+        var timing = ImportTiming.From(done, ImportTimingDetail.AllRuns)!;
+        Assert.Equal((Start, 40_000L, 0L), (timing.ProcessingStartedAt!.Value, timing.ProcessingMilliseconds!.Value, timing.EarlierProcessingMilliseconds!.Value));
+        Assert.Single(timing.Runs);
+        Assert.Empty(ImportTiming.From(done, ImportTimingDetail.Summary)!.Runs);
+    }
+
+    [Fact]
+    public async Task ARateLimitWaitIsAStepOfItsOwnAndTheInterruptedPhaseContinuesAfterIt()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var (reporter, store, time) = Create();
+        await reporter.StartAsync(id, 1, 0, 64, default);
+        await reporter.PhaseAsync("tagging", "Vraag 7 van 32: onderwerpen toekennen", default, 7, 32, "vraag");
+        time.Advance(TimeSpan.FromSeconds(5));
+        await reporter.ThrottledAsync(TimeSpan.FromSeconds(30), default);
+        time.Advance(TimeSpan.FromSeconds(30));
+        await reporter.ResumeAsync(default);
+        time.Advance(TimeSpan.FromSeconds(4));
+        await reporter.CompleteAsync("review", default);
+        var phases = store.Progress(id)!.Phases!;
+        Assert.Equal(["starting", "tagging", "throttled", "tagging"], phases.Select(p => p.Phase));
+        Assert.Equal(("throttled", "Wachten op modelcapaciteit, nieuwe poging over 30 s"), (phases[2].Outcome, phases[2].Message));
+        Assert.Equal(TimeSpan.FromSeconds(30), phases[2].EndedAt - phases[2].StartedAt);
+        Assert.Equal(("ok", 7, "Vraag 7 van 32: onderwerpen toekennen"), (phases[3].Outcome, phases[3].Step, phases[3].Message));
+    }
+
+    [Fact]
+    public async Task AFailedRunMarksTheOpenStepWithTheShortError()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var (reporter, store, time) = Create();
+        await reporter.StartAsync(id, 1, 0, 64, default);
+        await reporter.PhaseAsync("inventory", "Vragen inventariseren in het examen", default);
+        time.Advance(TimeSpan.FromSeconds(2));
+        await reporter.CompleteAsync("failed", default, new string('x', 500));
+        await reporter.CompleteAsync("review", default);
+        await reporter.PhaseAsync("finishing", "Na afloop", default);
+        var progress = store.Progress(id)!;
+        Assert.Equal("failed", progress.Outcome);
+        Assert.Equal(["starting", "inventory"], progress.Phases!.Select(p => p.Phase));
+        Assert.Equal(("ok", "failed"), (progress.Phases[0].Outcome, progress.Phases[1].Outcome));
+        Assert.Equal(300, progress.Phases[1].Error!.Length);
+    }
+
+    [Fact]
+    public async Task AResumedRunKeepsTheRunBeforeItAndExcludesTheWaitBetweenRuns()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var store = new MemoryImportStore();
+        var time = new ManualTime(Start);
+        var (first, _, _) = Create(store, time);
+        await first.StartAsync(id, 1, 0, 64, default);
+        await first.PhaseAsync("definitions", "Hoofdstukdefinities voorstellen", default);
+        time.Advance(TimeSpan.FromSeconds(10));
+        await first.CompleteAsync("awaitingDefinitions", default);
+        time.Advance(TimeSpan.FromHours(1));
+        var (second, _, _) = Create(store, time);
+        await second.StartAsync(id, 2, 1, 64, default);
+        await second.PhaseAsync("aligning", "Antwoorden koppelen", default);
+        time.Advance(TimeSpan.FromSeconds(20));
+        await second.CompleteAsync("review", default);
+
+        var progress = store.Progress(id)!;
+        Assert.Equal(2, progress.Run);
+        var earlier = Assert.Single(progress.EarlierRuns!);
+        Assert.Equal((1, 1, "awaitingDefinitions", Start.AddSeconds(10)), (earlier.Number, earlier.Attempt, earlier.Outcome, earlier.EndedAt!.Value));
+        var timing = ImportTiming.From(progress, ImportTimingDetail.AllRuns)!;
+        Assert.Equal([1, 2], timing.Runs.Select(r => r.Number));
+        Assert.Equal(Start, timing.ProcessingStartedAt);
+        Assert.Equal(30_000, timing.ProcessingMilliseconds);
+        Assert.Equal(10_000, timing.EarlierProcessingMilliseconds);
+        Assert.Equal(Start.AddHours(1).AddSeconds(30), timing.CompletedAt);
+        var current = Assert.Single(ImportTiming.From(progress, ImportTimingDetail.CurrentRun)!.Runs);
+        Assert.Equal(2, current.Number);
+    }
+
+    [Fact]
+    public async Task ARunThatStoppedWithoutFinishingEndsAtItsLastHeartbeat()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var (reporter, store, time) = Create();
+        await store.WriteProgressAsync(new ImportProgress(id, 1, 5, "tagging", 3, 9, "vraag", 4, 64, "Vraag 3 van 9", Start, Start.AddSeconds(50),
+            AttemptStartedAt: Start, Phases: [new("starting", Start, Start.AddSeconds(1), Outcome: "ok"), new("tagging", Start.AddSeconds(1))], Run: 3), default);
+        time.Advance(TimeSpan.FromMinutes(5));
+        await reporter.StartAsync(id, 2, 4, 64, default);
+        var run = Assert.Single(store.Progress(id)!.EarlierRuns!);
+        Assert.Equal((3, "interrupted", Start.AddSeconds(50)), (run.Number, run.Outcome, run.EndedAt!.Value));
+        Assert.Equal(("interrupted", Start.AddSeconds(50)), (run.Phases[^1].Outcome, run.Phases[^1].EndedAt!.Value));
+        Assert.Equal(4, store.Progress(id)!.Run);
+    }
+
+    [Fact]
+    public async Task OnlyTheLastTwentyRunsAreKept()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var (reporter, store, _) = Create();
+        var runs = Enumerable.Range(1, 20).Select(n => new ImportRunTiming(n, 1, Start, Start.AddSeconds(1), "failed", [])).ToArray();
+        await store.WriteProgressAsync(new ImportProgress(id, 1, 1, "starting", null, null, null, 0, 64, "", Start, Start,
+            AttemptStartedAt: Start, CompletedAt: Start.AddSeconds(1), Outcome: "failed", Phases: [], EarlierRuns: runs, Run: 21), default);
+        await reporter.StartAsync(id, 1, 0, 64, default);
+        var progress = store.Progress(id)!;
+        Assert.Equal(ImportProgressReporter.MaximumEarlierRuns, progress.EarlierRuns!.Length);
+        Assert.Equal(Enumerable.Range(2, 20), progress.EarlierRuns.Select(r => r.Number));
+        Assert.True(progress.EarlierRunsUnknown);
+        Assert.Equal(22, progress.Run);
+        Assert.Null(ImportTiming.From(progress, ImportTimingDetail.AllRuns)!.ProcessingStartedAt);
+    }
+
+    [Fact]
+    public async Task ProgressWrittenBeforeTheStepLogStillDeserializesAndMarksTheHistoryUnknown()
+    {
+        const string old = """
+            {"importId":"0123456789abcdef0123456789abcdef","attempt":1,"sequence":7,"phase":"tagging","step":3,"total":9,
+             "unit":"vraag","modelCalls":5,"modelCallBudget":64,"message":"Vraag 3 van 9","updatedAt":"2026-11-14T14:00:00+00:00",
+             "heartbeatAt":"2026-11-14T14:00:10+00:00"}
+            """;
+        var progress = JsonSerializer.Deserialize<ImportProgress>(old, Json)!;
+        Assert.Equal(("tagging", 7L), (progress.Phase, progress.Sequence));
+        Assert.Null(progress.AttemptStartedAt);
+        Assert.Null(progress.Phases);
+        Assert.Null(ImportTiming.From(progress, ImportTimingDetail.AllRuns));
+        var record = JsonSerializer.Deserialize<ImportRecord>("""
+            {"id":"0123456789abcdef0123456789abcdef","state":"review","metadata":{"subjectId":"biology","level":"havo","year":2025,
+             "timevak":1,"chapterNumber":"","chapterTitle":"","topics":[]},"topics":[],"questions":[],"warnings":[],"error":null,
+             "revision":"","examDocumentId":"a","answerDocumentId":"b","createdAt":"2026-11-14T13:00:00+00:00"}
+            """, Json)!;
+        Assert.Null(record.UpdatedAt);
+        Assert.Null(record.Timing);
+
+        var (reporter, store, _) = Create();
+        await store.WriteProgressAsync(progress, default);
+        await reporter.StartAsync(progress.ImportId, 2, 5, 64, default);
+        await reporter.CompleteAsync("review", default);
+        var timing = ImportTiming.From(store.Progress(progress.ImportId), ImportTimingDetail.AllRuns)!;
+        Assert.True(timing.EarlierRunsUnknown);
+        Assert.Null(timing.ProcessingMilliseconds);
+        Assert.Null(timing.ProcessingStartedAt);
+        Assert.Single(timing.Runs);
+    }
+}
+
 public sealed class ImportProgressStreamTests
 {
     private static readonly DateTimeOffset Start = new(2026, 11, 14, 14, 0, 0, TimeSpan.Zero);
@@ -336,6 +528,34 @@ public sealed class ImportProgressStreamTests
         var stale = For(events, "progress", record.Id).Last().Data;
         Assert.True(stale.GetProperty("stale").GetBoolean());
         Assert.Equal("De achtergrondtaak is nog niet gestart", stale.GetProperty("message").GetString());
+        await Stop(cancel, run);
+    }
+
+    [Fact]
+    public async Task ProgressEventsCarryTheStepLogOfTheCurrentRunOnly()
+    {
+        var harness = new Harness();
+        var record = await harness.Add("tagging", attempts: 2);
+        var earlier = new ImportRunTiming(1, 1, Start.AddMinutes(-30), Start.AddMinutes(-29), "awaitingDefinitions",
+            [new("definitions", Start.AddMinutes(-30), Start.AddMinutes(-29), "Hoofdstukdefinities voorstellen", Outcome: "ok")]);
+        await harness.Store.WriteProgressAsync(Progress(record, 1, "tagging", 1, 3, attempt: 2) with
+        {
+            AttemptStartedAt = Start, Run = 2, EarlierRuns = [earlier],
+            Phases = [new("starting", Start, Start.AddSeconds(1), Outcome: "ok"), new("tagging", Start.AddSeconds(1), Message: "Vraag 1 van 3", Step: 1, Total: 3, ModelCalls: 1)]
+        }, default);
+        using var cancel = new CancellationTokenSource();
+        var run = harness.Run(cancel.Token);
+        var events = await harness.WaitFor(e => e.Any(x => x.Name == "progress"));
+        var timing = For(events, "progress", record.Id).Single().Data.GetProperty("timing");
+        Assert.Equal(60_000, timing.GetProperty("earlierProcessingMilliseconds").GetInt64());
+        Assert.Equal(JsonValueKind.Null, timing.GetProperty("processingMilliseconds").ValueKind);
+        var runs = timing.GetProperty("runs");
+        Assert.Equal(1, runs.GetArrayLength());
+        Assert.Equal(2, runs[0].GetProperty("number").GetInt32());
+        var phases = runs[0].GetProperty("phases");
+        Assert.Equal("tagging", phases[1].GetProperty("phase").GetString());
+        Assert.Equal(JsonValueKind.Null, phases[1].GetProperty("endedAt").ValueKind);
+        Assert.Equal(1, phases[1].GetProperty("modelCalls").GetInt32());
         await Stop(cancel, run);
     }
 
