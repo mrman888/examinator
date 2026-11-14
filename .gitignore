@@ -8,3 +8,7 @@ Examenbundel_Compleet_HAVO_Biologie.pdf
 **/TestResults/
 scripts/local/settings.local.json
 .azure/*/
+
+.claude/worktrees/
+.claude/settings.local.json
+.playwright-mcp/
