@@ -5,6 +5,11 @@ import { ExamViewerComponent } from './components/exam-viewer.component';
 import { QuestionSidebarComponent } from './components/question-sidebar.component';
 import { ExamDataService, type ExamQuestion, type ExamSitting } from './services/exam-data.service';
 import { ExamImportComponent } from './components/exam-import.component';
+import { ThemeService, type ThemePreference } from './services/theme.service';
+
+const THEME_LABELS: Record<ThemePreference, string> = { system: 'Systeem', light: 'Licht', dark: 'Donker' };
+const THEME_ICONS: Record<ThemePreference, string> = { system: '◐', light: '☀', dark: '☾' };
+const NEXT_THEME: Record<ThemePreference, ThemePreference> = { system: 'light', light: 'dark', dark: 'system' };
 
 @Component({
   selector: 'app-root',
@@ -18,6 +23,7 @@ import { ExamImportComponent } from './components/exam-import.component';
 })
 export class AppComponent {
   private readonly examData = inject(ExamDataService);
+  private readonly theme = inject(ThemeService);
   private readonly yearPicker = viewChild<ElementRef<HTMLElement>>('yearPicker');
 
   readonly topics = this.examData.topics;
@@ -41,6 +47,10 @@ export class AppComponent {
   readonly yearMenuOpen = signal(false);
   readonly showAiTest = signal(false);
   readonly showImport = signal(false);
+  protected readonly themeLabel = computed(() => THEME_LABELS[this.theme.preference()]);
+  protected readonly themeToggleLabel = computed(() =>
+    `Thema: ${this.themeLabel()}. Wissel naar ${THEME_LABELS[NEXT_THEME[this.theme.preference()]]}`);
+  protected readonly themeIcon = computed(() => THEME_ICONS[this.theme.preference()]);
   readonly catalogError = this.examData.catalogError;
   readonly catalogLoading = this.examData.catalogLoading;
   private catalogRequest?: AbortController;
@@ -65,6 +75,10 @@ export class AppComponent {
   constructor() {
     inject(DestroyRef).onDestroy(() => this.catalogRequest?.abort());
     this.refreshCatalog();
+  }
+
+  protected cycleTheme(): void {
+    this.theme.cycle();
   }
 
   refreshCatalog(): void {

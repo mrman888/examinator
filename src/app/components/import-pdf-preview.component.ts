@@ -15,8 +15,8 @@ import { PdfPreviewService } from '../services/pdf-preview.service';
   `,
   styles: [`
     :host { display: block; min-width: 0; }
-    section { border: 1px solid var(--line); border-radius: 6px; padding: 12px; background: white; }
-    h3 { font-size: 14px; margin: 0 0 8px; } a { font-size: 12px; color: var(--green); }
+    section { border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; background: var(--color-surface); }
+    h3 { font-size: 14px; margin: 0 0 8px; } a { font-size: 12px; color: var(--color-accent); }
     .sheet { margin-top: 12px; } canvas { display: block; max-width: 100%; height: auto; }
     p { font-size: 12px; }
   `],

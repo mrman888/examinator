@@ -39,17 +39,17 @@ import { sendTestPrompt } from '../services/ai-test-client';
   `,
   styles: [`
     :host { width: min(100%, 850px); overflow: auto; padding: 0 0 24px 24px; }
-    .ai-panel { padding: clamp(18px, 4vw, 36px); border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
-    .ai-label { color: var(--green); font-size: 11px; font-weight: bold; letter-spacing: 1px; }
+    .ai-panel { padding: clamp(18px, 4vw, 36px); border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); }
+    .ai-label { color: var(--color-accent); font-size: 11px; font-weight: bold; letter-spacing: 1px; }
     h1 { font-size: 26px; } h2 { font-size: 18px; }
     p { line-height: 1.6; } label { display: block; margin: 24px 0 8px; font-weight: bold; }
-    textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; resize: vertical; }
-    textarea:focus { outline: 2px solid var(--green); outline-offset: 2px; }
+    textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid var(--color-border); border-radius: 6px; font: inherit; resize: vertical; }
+    textarea:focus { outline: 2px solid var(--color-accent); outline-offset: 2px; }
     .ai-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 24px; flex-wrap: wrap; }
-    button { padding: 10px 16px; border: 0; border-radius: 6px; background: var(--green); color: white; cursor: pointer; }
+    button { padding: 10px 16px; border: 0; border-radius: 6px; background: var(--color-accent); color: var(--color-on-accent); cursor: pointer; }
     button:disabled { opacity: .55; cursor: default; }
-    .ai-reply { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: var(--green-pale); border-radius: 6px; line-height: 1.6; margin-bottom: 12px; }
-    .ai-error { color: #962e2e; } small { color: #58665e; } a { color: var(--green); }
+    .ai-reply { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: var(--color-accent-subtle); border-radius: 6px; line-height: 1.6; margin-bottom: 12px; }
+    .ai-error { color: var(--color-danger); } small { color: var(--color-text-s6); } a { color: var(--color-accent); }
   `],
 })
 export class AiTestComponent implements OnDestroy {
