@@ -1,6 +1,7 @@
 using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs.Specialized;
+using Examinator.ServiceDefaults;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Examinator.Api;
@@ -33,14 +34,27 @@ public static class ImportRegistration
         services.AddTransient<ImportProgressStream>();
     }
 
+    // The hosted jobs run once per start. "--import-worker --poll" is the local development mode: it keeps
+    // taking dispatches until the process is stopped and ends at the first failed run, without retrying it.
+    public static async Task RunWorkerLoopAsync(string[] args, Func<string[], Task> runOnce, Func<int> exitCode, TimeSpan idleDelay)
+    {
+        var poll = args.Contains("--poll") && args.Contains("--import-worker");
+        while (true)
+        {
+            await runOnce(args);
+            if (!poll || exitCode() != 0) return;
+            await Task.Delay(idleDelay);
+        }
+    }
+
     public static async Task RunWorkerAsync(string[] args)
     {
-        var builder = Host.CreateApplicationBuilder(args.Where(arg => arg is not ("--import-worker" or "--reconcile")).ToArray());
+        var builder = Host.CreateApplicationBuilder(args.Where(arg => arg is not ("--import-worker" or "--reconcile" or "--poll")).ToArray());
         builder.Services.AddSingleton<TokenCredential>(_ => builder.Environment.IsDevelopment()
             ? new AzureCliCredential()
             : new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(
                 builder.Configuration["Azure:ManagedIdentityClientId"] ?? throw new InvalidOperationException("Configure the worker identity."))));
-        builder.Services.AddTelemetry(builder.Configuration);
+        builder.AddServiceDefaults();
         builder.Services.AddImports(builder.Configuration);
         builder.Services.AddSingleton<ImportProgressReporter>();
         using var host = builder.Build();

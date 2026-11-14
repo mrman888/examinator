@@ -4,19 +4,21 @@ using Azure.Core;
 using Azure.Identity;
 using Examinator.Api;
 using Examinator.Api.Middleware;
+using Examinator.ServiceDefaults;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
 
 if (args.Contains("--import-worker") || args.Contains("--reconcile"))
 {
-    await ImportRegistration.RunWorkerAsync(args);
+    await ImportRegistration.RunWorkerLoopAsync(
+        args, ImportRegistration.RunWorkerAsync, () => Environment.ExitCode, TimeSpan.FromSeconds(5));
     return;
 }
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 32_768);
-builder.Services.AddTelemetry(builder.Configuration);
+builder.AddServiceDefaults();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
     options.Authority = $"https://login.microsoftonline.com/{builder.Configuration["Azure:TenantId"]}/v2.0";

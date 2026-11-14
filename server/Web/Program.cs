@@ -2,15 +2,14 @@ using System.Net;
 using System.Threading.RateLimiting;
 using Azure.Core;
 using Azure.Identity;
-using Azure.Monitor.OpenTelemetry.AspNetCore;
+using Examinator.ServiceDefaults;
 using Examinator.Web;
 using Examinator.Web.Middleware;
 using Microsoft.AspNetCore.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 32_768);
-if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
-    builder.Services.AddOpenTelemetry().UseAzureMonitor();
+builder.AddServiceDefaults();
 builder.Services.AddSingleton(services =>
 {
     var configuration = services.GetRequiredService<IConfiguration>();

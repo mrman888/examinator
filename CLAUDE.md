@@ -19,7 +19,8 @@ Dutch HAVO biology exam trainer. Request flow: browser -> Web gateway (EasyAuth,
 ## Commands
 - Frontend (Node 26, `.nvmrc`): `npm ci`, `npm run build`, `npm test`; one spec: `npm test -- src\app\services\ai-test-client.spec.ts`
 - Backend: `dotnet build .\server\Examinator.slnx`, `dotnet test .\server\Tests\Tests.csproj`; one class: `--filter "FullyQualifiedName~GatewayTests"`
-- Local run (Api, Web, Angular, import worker): follow the local-run section of `server/README.md`.
+- Local run (Api, Web, Angular, import worker, Aspire dashboard): `.\start.ps1`; setup is in the local-run section of `server/README.md`.
+- `server/AppHost.Tests` runs in CI only; do not add it to the local test command.
 - No linter or formatter exists.
 
 ## Skills (`.claude/skills/`)

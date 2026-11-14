@@ -1,6 +1,6 @@
 ---
 name: verify-change
-description: Run the right checks after code changes in the Examinator repo. Maps changed paths (git status/diff) to frontend (npm run build, npm test), backend (dotnet build/test) and deployment PowerShell tests (deployment/tests/*.tests.ps1, scripts/local/tests.ps1). Use after finishing any edit under src/, server/, deployment/, infra/ or scripts/, before reporting a task as done, or when asked "does it still work", "run the tests" or "verify".
+description: Run the right checks after code changes in the Examinator repo. Maps changed paths (git status/diff) to frontend (npm run build, npm test), backend (dotnet build/test) and deployment PowerShell tests (deployment/tests/*.tests.ps1). Use after finishing any edit under src/, server/, deployment/ or infra/, before reporting a task as done, or when asked "does it still work", "run the tests" or "verify".
 ---
 
 # Verify a change
@@ -23,7 +23,7 @@ The working tree may contain unrelated edits from the user; judge by the files r
 | `src/`, `Data/`, `angular.json`, `package*.json`, `tsconfig*.json` | frontend |
 | `server/Api/`, `server/Web/`, `server/Tests/`, `server/*.slnx` | backend |
 | `deployment/*.ps1`, `deployment/azd/`, `deployment/*.bicep`, `infra/` | deployment tests (table below) |
-| `scripts/local/` | `powershell -NoProfile -File .\scripts\local\tests.ps1` |
+| `server/AppHost/`, `server/ServiceDefaults/`, `server/AppHost.Tests/` | backend; `AppHost.Tests` runs in CI only |
 | `.github/workflows/ci-cd.yml` | nothing locally; CI runs frontend and backend and deploys on merge. Re-read the change-detection logic you edited. |
 | Markdown, `.claude/` only | nothing to run |
 

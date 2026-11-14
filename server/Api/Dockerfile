@@ -1,8 +1,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /source
 COPY server/Api/Api.csproj server/Api/
+COPY server/ServiceDefaults/ServiceDefaults.csproj server/ServiceDefaults/
 RUN dotnet restore server/Api/Api.csproj
 COPY server/Api/ server/Api/
+COPY server/ServiceDefaults/ server/ServiceDefaults/
 RUN dotnet publish server/Api/Api.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
