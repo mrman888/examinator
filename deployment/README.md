@@ -48,7 +48,7 @@ For an application-code update, build unique ACR image tags with
 `azd deploy web --from-package <web-image>`. Run the API deployment first; its
 post-deploy hook reconciles both import jobs to the new API image.
 
-The existing GitHub Actions manual deployment remains on `deploy.ps1`; avoid
+The GitHub Actions deployment remains on `deploy.ps1`; avoid
 running it concurrently with AZD because both target the same Development
 resources.
 
@@ -90,19 +90,38 @@ quote removal; those files are deleted after each request.
 EasyAuth's hybrid sign-in flow requires ID-token issuance on its web registration;
 the application deployment script configures this as well as the callback URL.
 
-## GitHub Actions CI and manual deployment
+## GitHub Actions CI and deployment
 
-To enable imports on manual runs, set the `development` environment variable
+To enable imports on deployments, set the `development` environment variable
 `IMPORT_DEPLOYMENT_NAME` to an evaluated vision/strict-schema Foundry deployment.
 Keep it configured on subsequent deployments. This does not deploy or change
 the model used by **AI testen**.
 
-`.github/workflows/ci-cd.yml` runs the Angular build and tests and the .NET
-tests on pull requests targeting `main` and on pushes to `main`. A manually
-started run on `main` runs those checks again and, only if they pass, invokes
-`deploy.ps1` against the existing development deployment. Pull requests and
-pushes never deploy. The script still uses remote ACR Build, so GitHub Actions
-orchestrates the deployment but does not replace Azure's build service.
+`.github/workflows/ci-cd.yml` runs on pull requests targeting `main`, on pushes
+to `main` and on manual runs. The ruleset on `main` only accepts changes through
+a pull request whose `changes`, `frontend` and `backend` checks pass.
+
+The `changes` job decides what to test, build and deploy from the changed files:
+
+| Changed files | Tests | Image rebuilt |
+| --- | --- | --- |
+| `src/`, `Data/`, `package*.json`, `angular.json`, `tsconfig*.json`, `.nvmrc` | frontend | web |
+| `server/Web/` | backend | web |
+| `server/Api/` | backend | api |
+| other `server/` files (such as `server/Tests/`) | backend | none |
+| `.dockerignore` | none | web and api |
+| `deployment/` (except `tests/` and Markdown) | none | none, but deploys |
+| `.github/workflows/ci-cd.yml` | frontend and backend | none, but deploys |
+
+Pull requests are compared with their base branch. A push to `main` is compared
+with the last commit that deployed successfully, so changes from a failed deploy
+are built the next time. When a merged pull request changes anything deployable,
+the push to `main` runs `deploy.ps1 -Images <changed images>`. An image that is
+not rebuilt keeps the image its container app runs now. A push to `main` that is
+not a merged pull request is tested but never deployed. A manual run on `main`
+tests, builds and deploys everything. The script still uses remote ACR Build, so
+GitHub Actions orchestrates the deployment but does not replace Azure's build
+service.
 
 Before the first run, an Azure/Entra administrator must:
 
@@ -133,8 +152,8 @@ Before the first run, an Azure/Entra administrator must:
    **user object IDs**, including the current operator if they should retain
    access. Service-principal sign-in does not automatically add a signed-in
    user; the configured list replaces the gateway allowlist on deployment.
-4. Commit and push the workflow to `main`, then select **Actions → CI and
-   manual deployment → Run workflow**, choosing `main`. Environment approval,
+4. Merge a pull request into `main`, or select **Actions → CI and deployment →
+   Run workflow**, choosing `main`. Environment approval,
    if configured, happens before the Azure deployment job. Each attempt uses
    its own `gha-<run-id>-<attempt>` image tag. Deployment concurrency prevents
    overlapping runs, but a failed script can leave partial changes; inspect

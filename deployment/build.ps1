@@ -6,6 +6,8 @@ param(
     [string] $ResourceGroupName = 'examinator',
     [string] $RegistryName,
     [string] $ImageTag,
+    [ValidateSet('Api', 'Web')]
+    [string[]] $Images = @('Api', 'Web'),
     [switch] $Build
 )
 
@@ -53,23 +55,28 @@ if ($registry.sku.name -ne 'Basic' -or $registry.adminUserEnabled) {
     throw 'Build target must be the configured Basic ACR with admin credentials disabled.'
 }
 
+$apiImage = "$($registry.loginServer)/examinator-api:$ImageTag"
+$webImage = "$($registry.loginServer)/examinator-web:$ImageTag"
+$entries = @(
+    @{ Name = 'Api'; Path = 'server/Api/Dockerfile'; Image = $apiImage },
+    @{ Name = 'Web'; Path = 'server/Web/Dockerfile'; Image = $webImage }
+) | Where-Object { $Images -contains $_.Name }
+
 Write-Host "Repository root build context: $repositoryRoot"
-Write-Host "API image: $($registry.loginServer)/examinator-api:$ImageTag (server/Api/Dockerfile)"
-Write-Host "Web image: $($registry.loginServer)/examinator-web:$ImageTag (server/Web/Dockerfile)"
+foreach ($entry in $entries) {
+    Write-Host "$($entry.Name) image: $($entry.Image) ($($entry.Path))"
+}
 if (-not $Build) {
     Write-Host 'Preflight complete; no images built. Rerun with -Build to use az acr build.'
     return
 }
-if (-not $PSCmdlet.ShouldProcess($registry.loginServer, 'Build and push API and web images')) {
+if (-not $PSCmdlet.ShouldProcess($registry.loginServer, "Build and push images: $($Images -join ', ')")) {
     return
 }
 
 # Keep the repository root as the remote build context so existing Dockerfiles
 # can copy solution/project files outside their own directories.
-foreach ($entry in @(
-    @{ Path = 'server/Api/Dockerfile'; Image = "$($registry.loginServer)/examinator-api:$ImageTag" },
-    @{ Path = 'server/Web/Dockerfile'; Image = "$($registry.loginServer)/examinator-web:$ImageTag" }
-)) {
+foreach ($entry in $entries) {
     Write-Host "Building $($entry.Path); waiting for ACR completion without streaming logs."
     & az acr build --registry $RegistryName --file $entry.Path --image $entry.Image `
         --subscription $SubscriptionId.ToString() $repositoryRoot --no-logs --only-show-errors --output none | Out-Host
@@ -81,6 +88,6 @@ foreach ($entry in @(
 [pscustomobject]@{
     RegistryLoginServer = [string]$registry.loginServer
     ImageTag = $ImageTag
-    ApiImage = "$($registry.loginServer)/examinator-api:$ImageTag"
-    WebImage = "$($registry.loginServer)/examinator-web:$ImageTag"
+    ApiImage = if ($Images -contains 'Api') { $apiImage } else { $null }
+    WebImage = if ($Images -contains 'Web') { $webImage } else { $null }
 }
