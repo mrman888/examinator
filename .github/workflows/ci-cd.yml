@@ -33,8 +33,15 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          merged=$(gh api "repos/$REPO/commits/$SHA/pulls" \
-            | jq --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | length')
+          # GitHub links a merge commit to its pull request a few seconds after the merge,
+          # so a lookup right after the push can come back empty. Retry for about 30 seconds.
+          merged=0
+          for attempt in 1 2 3 4 5 6; do
+            merged=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+              | jq --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | length')
+            if [ "$merged" -gt 0 ]; then break; fi
+            sleep 5
+          done
           if [ "$merged" -gt 0 ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           else
