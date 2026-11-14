@@ -56,7 +56,29 @@ public sealed record SubjectResponse(string Id, string Title);
 public sealed record CatalogResponse(SubjectResponse[] Subjects, TopicDefinition[] Topics,
     CatalogQuestion[] Questions, CatalogExam[] Exams);
 
-public sealed class ImportProblem(int status, string message) : Exception(message)
+public class ImportProblem(int status, string message) : Exception(message)
 {
     public int Status { get; } = status;
 }
+
+/// <summary>An earlier import that already holds a document with the same SHA-256 digest.</summary>
+public sealed record DuplicateImport(string ImportId, string State, int Year, int Timevak, string Role, string DocumentId);
+
+/// <summary>A hash index row: the first stored original with this digest.</summary>
+public sealed record DocumentHashEntry(string Sha256, string DocumentId, string Role, string ImportId, DateTimeOffset FirstSeen);
+
+public sealed class ImportDuplicateProblem(DuplicateImport[] duplicates)
+    : ImportProblem(409, "Dit document is al eerder verwerkt.")
+{
+    public DuplicateImport[] Duplicates { get; } = duplicates;
+}
+
+/// <summary>
+/// Worker-written live progress for one processing attempt. The import record stays authoritative for state;
+/// this blob only describes what the leased worker is doing right now.
+/// </summary>
+public sealed record ImportProgress(string ImportId, int Attempt, long Sequence, string Phase, int? Step, int? Total,
+    string? Unit, int ModelCalls, int ModelCallBudget, string Message, DateTimeOffset UpdatedAt, DateTimeOffset HeartbeatAt);
+
+/// <summary>A conditionally read blob: Value is null when the blob does not exist.</summary>
+public sealed record Versioned<T>(T? Value, string? ETag, DateTimeOffset? LastModified) where T : class;

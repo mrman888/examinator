@@ -84,6 +84,73 @@ public sealed class ImportStorageTests
         }
     }
 
+    [Fact]
+    public async Task ProgressIsWrittenUnconditionallyAndReadsAreConditional()
+    {
+        var handler = new ConditionalHandler();
+        using var http = new HttpClient(handler);
+        var options = new BlobClientOptions { Transport = new HttpClientTransport(http), Retry = { MaxRetries = 0 } };
+        var credential = new Credential();
+        var storage = new ImportStorage(
+            new BlobContainerClient(new Uri("https://storage.example/exam-imports"), credential, options),
+            new BlobContainerClient(new Uri("https://storage.example/exam-documents"), credential, options),
+            new QueueClient(new Uri("https://storage.example/exam-imports"), credential));
+        var id = Guid.NewGuid().ToString("N");
+        var progress = new ImportProgress(id, 1, 3, "tagging", 2, 5, "vraag", 4, 64, "Vraag 2 van 5: onderwerpen toekennen",
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        await storage.WriteProgressAsync(progress, default);
+        var write = handler.Requests.Single();
+        Assert.Equal(("PUT", $"/exam-imports/progress/{id}.json", "", ""), (write.Method, write.Path, write.IfMatch, write.IfNoneMatch));
+
+        handler.Body = JsonSerializer.Serialize(progress, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var read = await storage.ReadProgressAsync(id, null, default);
+        Assert.Equal(progress, read!.Value);
+        Assert.Equal("\"p1\"", read.ETag);
+        Assert.Null(await storage.ReadProgressAsync(id, "\"p1\"", default));
+        Assert.Equal("\"p1\"", handler.Requests.Last().IfNoneMatch);
+
+        handler.Body = JsonSerializer.Serialize(Sample(id), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var record = await storage.ReadIfChangedAsync(id, null, default);
+        Assert.Equal("\"p1\"", record!.Value!.Revision);
+        Assert.Equal($"/exam-imports/jobs/{id}.json", handler.Requests.Last().Path);
+        Assert.Null(await storage.ReadIfChangedAsync(id, "\"p1\"", default));
+
+        handler.Missing = true;
+        var missing = await storage.ReadProgressAsync(id, null, default);
+        Assert.Null(missing!.Value);
+    }
+
+    private static ImportRecord Sample(string id) => new(id, "tagging", new("biology", "havo", 2025, 1, "", "", []), [], [], [], null, "",
+        Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, ProcessingAttempts: 1);
+
+    private sealed class ConditionalHandler : HttpMessageHandler
+    {
+        public List<(string Method, string Path, string IfMatch, string IfNoneMatch)> Requests { get; } = [];
+        public string Body { get; set; } = "{}";
+        public bool Missing { get; set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var ifNoneMatch = request.Headers.IfNoneMatch.ToString();
+            Requests.Add((request.Method.Method, request.RequestUri!.AbsolutePath, request.Headers.IfMatch.ToString(), ifNoneMatch));
+            var status = request.Method == HttpMethod.Put ? HttpStatusCode.Created
+                : Missing ? HttpStatusCode.NotFound
+                : ifNoneMatch == "\"p1\"" ? HttpStatusCode.NotModified : HttpStatusCode.OK;
+            var response = new HttpResponseMessage(status)
+            {
+                Content = status == HttpStatusCode.OK ? new StringContent(Body, Encoding.UTF8, "application/json") : new ByteArrayContent([])
+            };
+            if (status == HttpStatusCode.OK) response.Content.Headers.ContentLength = Encoding.UTF8.GetByteCount(Body);
+            if (status == HttpStatusCode.NotFound) response.Headers.TryAddWithoutValidation("x-ms-error-code", "BlobNotFound");
+            response.Headers.TryAddWithoutValidation("ETag", "\"p1\"");
+            response.Headers.TryAddWithoutValidation("Last-Modified", DateTimeOffset.UtcNow.ToString("R"));
+            response.Headers.TryAddWithoutValidation("x-ms-blob-type", "BlockBlob");
+            response.Headers.TryAddWithoutValidation("x-ms-request-id", "synthetic");
+            response.Headers.TryAddWithoutValidation("x-ms-version", "2024-11-04");
+            return Task.FromResult(response);
+        }
+    }
+
     private sealed class Credential : TokenCredential
     {
         public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>

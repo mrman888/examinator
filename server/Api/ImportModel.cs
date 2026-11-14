@@ -16,7 +16,9 @@ public interface IImportModel
         ImportSourceBlock[] blocks, PageImage[] images, CancellationToken cancellationToken);
 }
 
-public sealed class ImportModel(HttpClient client, TokenCredential credential, IConfiguration configuration) : IImportModel
+/// <summary>Foundry import calls. The optional progress reporter (worker only) shows rate-limit waits.</summary>
+public sealed class ImportModel(HttpClient client, TokenCredential credential, IConfiguration configuration,
+    ImportProgressReporter? progress = null) : IImportModel
 {
     public const string PromptVersion = "subject-import-v1";
     internal const int MaximumRateLimitRetries = 3;
@@ -182,7 +184,10 @@ public sealed class ImportModel(HttpClient client, TokenCredential credential, I
             if (response.StatusCode == HttpStatusCode.TooManyRequests && attempt < MaximumRateLimitRetries)
             {
                 // Throttled requests are rejected before inference and are not billed, so waiting is not a paid retry.
-                await Delay(RetryDelay(response), cancellationToken);
+                var wait = RetryDelay(response);
+                if (progress is not null) await progress.ThrottledAsync(wait, cancellationToken);
+                await Delay(wait, cancellationToken);
+                if (progress is not null) await progress.ResumeAsync(cancellationToken);
                 continue;
             }
             if (response.StatusCode == HttpStatusCode.TooManyRequests)

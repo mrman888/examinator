@@ -52,6 +52,27 @@ export interface ImportRecord {
   createdAt: string;
 }
 
+export interface DuplicateImport {
+  importId: string;
+  state: string;
+  year: number;
+  timevak: number;
+  role: string;
+  documentId: string;
+}
+
+export class ImportRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly duplicates: DuplicateImport[] = []) {
+    super(message);
+  }
+}
+
+function duplicate(value: unknown): value is DuplicateImport {
+  return object(value) && typeof value['importId'] === 'string' && typeof value['state'] === 'string' &&
+    nonNegativeInteger(value['year']) && nonNegativeInteger(value['timevak']) &&
+    typeof value['role'] === 'string' && typeof value['documentId'] === 'string';
+}
+
 export interface CatalogQuestion {
   id: string;
   topics: string[];
@@ -194,8 +215,13 @@ async function request<T>(path: string, validate: (value: unknown) => value is T
     };
     const detail = object(result) && typeof result['detail'] === 'string' ? result['detail'] : null;
     const title = object(result) && typeof result['title'] === 'string' ? result['title'] : null;
-    throw new Error(detail ?? defaults[response.status] ?? title ?? `Het verzoek is mislukt (HTTP ${response.status}).`);
+    const duplicates = response.status === 409 && object(result) && Array.isArray(result['duplicates'])
+      ? result['duplicates'].filter(duplicate) : [];
+    throw new ImportRequestError(
+      detail ?? (duplicates.length ? title : null) ?? defaults[response.status] ?? title ?? `Het verzoek is mislukt (HTTP ${response.status}).`,
+      response.status, duplicates);
   }
+  if (response.status === 204 && method === 'DELETE') return undefined as T;
   if (!isJson || !validate(result)) {
     throw new Error('Geen geldig importantwoord ontvangen. Controleer je sessie en de API-configuratie.');
   }
@@ -219,8 +245,94 @@ export function uploadImport(data: FormData, signal: AbortSignal): Promise<Impor
   return request('/api/imports', importRecord, signal, 'POST', data);
 }
 
+export function reprocessImport(id: string, data: FormData, signal: AbortSignal): Promise<ImportRecord> {
+  return request(`/api/imports/${encodeURIComponent(id)}/reprocess`, importRecord, signal, 'POST', data);
+}
+
 export function updateImport(id: string, action: 'draft' | 'confirm-definitions' | 'publish' | 'cancel' | 'retry',
   body: object, signal: AbortSignal): Promise<ImportRecord> {
   return request(`/api/imports/${encodeURIComponent(id)}/${action}`, importRecord, signal,
     action === 'draft' ? 'PATCH' : 'POST', body);
+}
+
+export function deleteImport(id: string, signal: AbortSignal): Promise<void> {
+  return request(`/api/imports/${encodeURIComponent(id)}`, (value): value is void => true, signal, 'DELETE');
+}
+
+/** Server-sent live progress for the import list; see server/README.md for the event contract. */
+export const IMPORT_EVENTS_URL = '/api/imports/events';
+
+export type ImportProgressPhase = 'queued' | 'starting' | 'extracting' | 'definitions' | 'rendering' |
+  'inventory' | 'aligning' | 'tagging' | 'throttled' | 'finishing';
+
+export interface ImportProgressEvent {
+  importId: string;
+  state: ImportState;
+  revision: string;
+  phase: ImportProgressPhase;
+  step: number | null;
+  total: number | null;
+  unit: string | null;
+  modelCalls: number | null;
+  modelCallBudget: number | null;
+  message: string;
+  updatedAt: string | null;
+  heartbeatAt: string | null;
+  serverTime: string;
+  stale: boolean;
+}
+
+export interface ImportSettledEvent {
+  importId: string;
+  state: ImportState | 'deleted';
+  revision: string | null;
+}
+
+const IMPORT_STATES: readonly string[] = ['queued', 'extracting', 'awaitingDefinitions', 'aligning', 'tagging',
+  'review', 'published', 'failed', 'cancelled'];
+const PROGRESS_PHASES: readonly string[] = ['queued', 'starting', 'extracting', 'definitions', 'rendering',
+  'inventory', 'aligning', 'tagging', 'throttled', 'finishing'];
+
+function nullableCount(value: unknown): value is number | null {
+  return value === null || nonNegativeInteger(value);
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function progressEvent(value: unknown): value is ImportProgressEvent {
+  return object(value) && typeof value['importId'] === 'string' && !!value['importId'] &&
+    typeof value['state'] === 'string' && IMPORT_STATES.includes(value['state']) &&
+    typeof value['revision'] === 'string' && typeof value['phase'] === 'string' && PROGRESS_PHASES.includes(value['phase']) &&
+    nullableCount(value['step']) && nullableCount(value['total']) && nullableString(value['unit']) &&
+    nullableCount(value['modelCalls']) && nullableCount(value['modelCallBudget']) &&
+    typeof value['message'] === 'string' && nullableString(value['updatedAt']) && nullableString(value['heartbeatAt']) &&
+    typeof value['serverTime'] === 'string' && typeof value['stale'] === 'boolean';
+}
+
+function settledEvent(value: unknown): value is ImportSettledEvent {
+  return object(value) && typeof value['importId'] === 'string' && !!value['importId'] &&
+    typeof value['state'] === 'string' && (value['state'] === 'deleted' || IMPORT_STATES.includes(value['state'])) &&
+    nullableString(value['revision']);
+}
+
+function parse<T>(data: unknown, validate: (value: unknown) => value is T): T | null {
+  if (typeof data !== 'string') return null;
+  try {
+    const value: unknown = JSON.parse(data);
+    return validate(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns null for anything that is not a valid `progress` event payload. */
+export function parseProgressEvent(data: unknown): ImportProgressEvent | null {
+  return parse(data, progressEvent);
+}
+
+/** Returns null for anything that is not a valid `settled` event payload. */
+export function parseSettledEvent(data: unknown): ImportSettledEvent | null {
+  return parse(data, settledEvent);
 }

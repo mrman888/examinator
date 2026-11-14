@@ -2,9 +2,11 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExamImportComponent } from './exam-import.component';
 import { ExamDataService } from '../services/exam-data.service';
-import { type ExamCatalog, type ImportRecord } from '../services/exam-import-client';
+import { type ExamCatalog, type ImportProgressEvent, type ImportRecord } from '../services/exam-import-client';
 import { PdfPreviewService } from '../services/pdf-preview.service';
 import { QuestionSidebarComponent } from './question-sidebar.component';
+import { PROGRESS_STREAM_DEPS } from '../services/import-progress-stream';
+import { fakeStreamDeps } from '../services/import-progress-fakes';
 
 const record: ImportRecord = {
   id: 'import-1', state: 'review', revision: '"v1"', createdAt: '2026-11-13T18:00:00Z',
@@ -19,12 +21,14 @@ const record: ImportRecord = {
 };
 
 describe('import review and catalog integration', () => {
+  let stream: ReturnType<typeof fakeStreamDeps>;
   beforeEach(() => {
     localStorage.clear();
+    stream = fakeStreamDeps();
     TestBed.configureTestingModule({ providers: [{
       provide: PdfPreviewService,
       useValue: { renderPage: vi.fn().mockResolvedValue(true), cancelRender: vi.fn() },
-    }] });
+    }, { provide: PROGRESS_STREAM_DEPS, useValue: stream.deps }] });
   });
   afterEach(() => {
     TestBed.resetTestingModule();
@@ -59,6 +63,129 @@ describe('import review and catalog integration', () => {
     const labels = [...dialog.querySelectorAll('label')].map((label) => label.textContent).join(' ');
     expect(labels).not.toContain('Jaar');
     expect(labels).not.toContain('Tijdvak');
+  });
+
+  it('submits PDF links instead of files when the link source is chosen', async () => {
+    const fetch = vi.fn().mockImplementation((url: string, options?: RequestInit) =>
+      Promise.resolve(Response.json(options?.method === 'POST' ? record : [])));
+    vi.stubGlobal('fetch', fetch);
+    const fixture = TestBed.createComponent(ExamImportComponent);
+    await fixture.whenStable();
+    const root: HTMLElement = fixture.nativeElement;
+    root.querySelector<HTMLButtonElement>('.import-panel header button')!.click();
+    await fixture.whenStable();
+    const form = root.querySelector('form')!;
+    expect(form.querySelector('input[name="exam"]')).not.toBeNull();
+    expect(form.querySelector('input[name="examUrl"]')).toBeNull();
+    for (const field of ['exam', 'answers']) {
+      const radio = form.querySelector<HTMLInputElement>(`input[name="${field}Mode"][value="url"]`)!;
+      radio.click();
+      await fixture.whenStable();
+      expect(form.querySelector(`input[name="${field}"]`)).toBeNull();
+      const url = form.querySelector<HTMLInputElement>(`input[name="${field}Url"]`)!;
+      url.value = `https://www.alleexamens.nl/${field}.pdf`;
+    }
+    expect(form.querySelector('input[name="permission"]')).toBeNull();
+    form.requestSubmit();
+    await fixture.whenStable();
+    const post = fetch.mock.calls.find(([, options]) => (options as RequestInit | undefined)?.method === 'POST')!;
+    const body = (post[1] as RequestInit).body as FormData;
+    expect(post[0]).toBe('/api/imports');
+    expect(body.get('examUrl')).toBe('https://www.alleexamens.nl/exam.pdf');
+    expect(body.get('answersUrl')).toBe('https://www.alleexamens.nl/answers.pdf');
+    expect(body.has('exam')).toBe(false);
+    expect(body.has('answers')).toBe(false);
+    expect(body.has('examMode')).toBe(false);
+  });
+
+  const duplicateProblem = {
+    status: 409, title: 'Dit document is al eerder verwerkt.',
+    duplicates: [{ importId: 'import-1', state: 'review', year: 2025, timevak: 1, role: 'exam', documentId: 'exam-1' }],
+  };
+
+  async function openDialog(fetch: ReturnType<typeof vi.fn>) {
+    vi.stubGlobal('fetch', fetch);
+    const fixture = TestBed.createComponent(ExamImportComponent);
+    await fixture.whenStable();
+    const root: HTMLElement = fixture.nativeElement;
+    root.querySelector<HTMLButtonElement>('.import-panel header button')!.click();
+    await fixture.whenStable();
+    return { fixture, root, form: root.querySelector('form')! };
+  }
+
+  function button(root: HTMLElement, text: string): HTMLButtonElement {
+    return [...root.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.includes(text))!;
+  }
+
+  it('shows a Dutch duplicate message with open and reprocess actions', async () => {
+    const fetch = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (options?.method === 'POST' && url === '/api/imports') {
+        return Promise.resolve(Response.json(duplicateProblem, { status: 409, headers: { 'content-type': 'application/problem+json' } }));
+      }
+      if (options?.method === 'POST' && url === '/api/imports/import-1/reprocess') {
+        return Promise.resolve(Response.json({ ...record, id: 'import-2', state: 'queued', questions: [] }));
+      }
+      return Promise.resolve(Response.json(url === '/api/imports' ? [record] : record));
+    });
+    const { fixture, root, form } = await openDialog(fetch);
+    for (const field of ['exam', 'answers']) {
+      form.querySelector<HTMLInputElement>(`input[name="${field}Mode"][value="url"]`)!.click();
+      await fixture.whenStable();
+      form.querySelector<HTMLInputElement>(`input[name="${field}Url"]`)!.value = `https://www.alleexamens.nl/${field}.pdf`;
+    }
+    form.requestSubmit();
+    await fixture.whenStable();
+    const message = root.querySelector('.duplicates')!;
+    expect(message.textContent).toContain('Dit document is al eerder verwerkt.');
+    expect(message.textContent).toContain('2025, tijdvak 1');
+    expect(message.textContent).toContain('Klaar voor beoordeling');
+
+    button(root, 'Opnieuw verwerken met andere onderwerpen').click();
+    await fixture.whenStable();
+    const call = fetch.mock.calls.find(([url]) => url === '/api/imports/import-1/reprocess')!;
+    const body = (call[1] as RequestInit).body as FormData;
+    expect(JSON.parse(String(body.get('metadata'))).level).toBe('havo');
+    expect(body.has('exam')).toBe(false);
+    expect(body.has('examUrl')).toBe(false);
+    expect(root.querySelector('.duplicates')).toBeNull();
+  });
+
+  it('opens the earlier import from the duplicate message', async () => {
+    const fetch = vi.fn().mockImplementation((url: string, options?: RequestInit) =>
+      Promise.resolve(options?.method === 'POST'
+        ? Response.json(duplicateProblem, { status: 409, headers: { 'content-type': 'application/problem+json' } })
+        : Response.json(url === '/api/imports' ? [] : record)));
+    const { fixture, root, form } = await openDialog(fetch);
+    for (const field of ['exam', 'answers']) {
+      form.querySelector<HTMLInputElement>(`input[name="${field}Mode"][value="url"]`)!.click();
+      await fixture.whenStable();
+      form.querySelector<HTMLInputElement>(`input[name="${field}Url"]`)!.value = `https://www.alleexamens.nl/${field}.pdf`;
+    }
+    form.requestSubmit();
+    await fixture.whenStable();
+    button(root, 'Bestaande import openen').click();
+    await fixture.whenStable();
+    expect(fetch).toHaveBeenCalledWith('/api/imports/import-1', expect.anything());
+    expect(root.querySelector('.review')).not.toBeNull();
+  });
+
+  it('reprocesses an existing import without file inputs and keeps its topics', async () => {
+    const queued = { ...record, id: 'import-2', state: 'queued' as const, questions: [] };
+    const { fetch, fixture, root } = await review();
+    fetch.mockImplementation((url: string, options?: RequestInit) =>
+      Promise.resolve(Response.json(options?.method === 'POST' ? queued : url === '/api/imports' ? [record] : record)));
+    button(root, 'Opnieuw verwerken met andere onderwerpen').click();
+    await fixture.whenStable();
+    const form = root.querySelector('form')!;
+    expect(form.querySelector('input[type="file"][name="exam"]')).toBeNull();
+    expect(form.querySelector('input[name="examUrl"]')).toBeNull();
+    expect(form.textContent).toContain('Celdeling');
+    form.requestSubmit();
+    await fixture.whenStable();
+    const call = fetch.mock.calls.find(([url]) => url === '/api/imports/import-1/reprocess')!;
+    const metadata = JSON.parse(String(((call[1] as RequestInit).body as FormData).get('metadata')));
+    expect(metadata.topics[0].id).toBe('biology-cell-division');
+    expect(root.textContent).toContain('niet opnieuw geupload');
   });
 
   it('requires review and saved changes before publication, and saves the revision with corrections', async () => {
@@ -145,5 +272,279 @@ describe('import review and catalog integration', () => {
     await fixture.whenStable();
     expect(root.querySelectorAll('.topic-button')).toHaveLength(1);
     expect(root.querySelector('.topic-button')?.textContent).toContain('Celdeling en kanker');
+  });
+
+  describe('list order and deletion', () => {
+    const older: ImportRecord = { ...record, id: 'import-old', createdAt: '2026-11-10T09:00:00Z', state: 'failed', questions: [] };
+    const newer: ImportRecord = { ...record, id: 'import-new', createdAt: '2026-11-14T09:00:00Z', state: 'review' };
+    const published: ImportRecord = { ...record, id: 'import-pub', createdAt: '2026-11-12T09:00:00Z', state: 'published' };
+    const busyRecord: ImportRecord = { ...record, id: 'import-busy', createdAt: '2026-11-11T09:00:00Z', state: 'tagging' };
+    const all = [older, newer, published, busyRecord];
+    type Overrides = Record<string, (options?: RequestInit) => Response>;
+
+    function stub(listed: ImportRecord[], overrides: Overrides) {
+      const fetch = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+        const handler = overrides[`${options?.method ?? 'GET'} ${url}`];
+        if (handler) return Promise.resolve(handler(options));
+        if (url === '/api/imports') return Promise.resolve(Response.json(listed));
+        return Promise.resolve(Response.json(listed.find((item) => url === `/api/imports/${item.id}`) ?? listed[0]));
+      });
+      vi.stubGlobal('fetch', fetch);
+      return fetch;
+    }
+
+    function ids(root: HTMLElement): string[] {
+      return [...root.querySelectorAll('.import-item small')].map((item) => item.textContent!.split(' · ')[1]);
+    }
+
+    async function open(listed: ImportRecord[], overrides: Overrides = {}) {
+      const fetch = stub(listed, overrides);
+      const fixture = TestBed.createComponent(ExamImportComponent);
+      await fixture.whenStable();
+      return { fixture, root: fixture.nativeElement as HTMLElement, fetch };
+    }
+
+    const noContent = () => new Response(null, { status: 204 });
+
+    it('shows newest first with the id as tiebreaker, whatever order the server returns', async () => {
+      const tie: ImportRecord = { ...older, id: 'import-aaa', createdAt: older.createdAt };
+      const { root } = await open([older, tie, published, newer, busyRecord]);
+      expect(ids(root)).toEqual(['import-n', 'import-p', 'import-b', 'import-a', 'import-o']);
+    });
+
+    it('keeps the order after selecting, refreshing the selected item and refreshing the list', async () => {
+      const { fixture, root, fetch } = await open(all);
+      const before = ids(root);
+      expect(before).toEqual(['import-n', 'import-p', 'import-b', 'import-o']);
+      root.querySelectorAll<HTMLButtonElement>('.import-item')[3].click();
+      await fixture.whenStable();
+      expect(ids(root)).toEqual(before);
+      expect(root.querySelector('.import-item.active small')?.textContent).toContain('import-o');
+      button(root, 'Status vernieuwen').click();
+      await fixture.whenStable();
+      expect(ids(root)).toEqual(before);
+      root.querySelectorAll<HTMLButtonElement>('.import-item')[0].click();
+      await fixture.whenStable();
+      expect(ids(root)).toEqual(before);
+      button(root, 'Lijst vernieuwen').click();
+      await fixture.whenStable();
+      expect(ids(root)).toEqual(before);
+      expect(fetch).toHaveBeenCalledWith('/api/imports/import-old', expect.anything());
+    });
+
+    it('replaces an updated record in place', async () => {
+      const { fixture, root } = await open(all, {
+        'POST /api/imports/import-old/retry': () => Response.json({ ...older, state: 'queued', revision: '"v2"' }),
+      });
+      const before = ids(root);
+      root.querySelectorAll<HTMLButtonElement>('.import-item')[3].click();
+      await fixture.whenStable();
+      button(root, 'Opnieuw verwerken').click();
+      await fixture.whenStable();
+      expect(ids(root)).toEqual(before);
+      expect(root.querySelectorAll('.import-item span')[3].textContent).toBe('In wachtrij');
+    });
+
+    it('asks for confirmation before deleting and cancels without a request', async () => {
+      const { fixture, root, fetch } = await open(all);
+      root.querySelector<HTMLButtonElement>('.delete-button')!.click();
+      await fixture.whenStable();
+      expect(root.querySelector('.delete-confirm')!.textContent).toContain('definitief verwijderen');
+      expect(fetch.mock.calls.some(([, options]) => (options as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
+      button(root, 'Annuleren').click();
+      await fixture.whenStable();
+      expect(root.querySelector('.delete-confirm')).toBeNull();
+      expect(ids(root)).toHaveLength(4);
+    });
+
+    it('labels the delete buttons and disables them for published and processing imports', async () => {
+      const { root } = await open(all);
+      const buttons = [...root.querySelectorAll<HTMLButtonElement>('.delete-button')];
+      expect(buttons.map((item) => item.getAttribute('aria-label'))).toEqual([
+        'Import import-n verwijderen', 'Import import-p verwijderen',
+        'Import import-b verwijderen', 'Import import-o verwijderen']);
+      expect(buttons.map((item) => item.disabled)).toEqual([false, true, true, false]);
+    });
+
+    it('deletes an import from the list in place and keeps the order of the others', async () => {
+      const { fixture, root, fetch } = await open(all, { 'DELETE /api/imports/import-old': noContent });
+      root.querySelectorAll<HTMLButtonElement>('.delete-button')[3].click();
+      await fixture.whenStable();
+      button(root, 'Ja, verwijderen').click();
+      await fixture.whenStable();
+      expect(fetch).toHaveBeenCalledWith('/api/imports/import-old', expect.objectContaining({
+        method: 'DELETE', headers: expect.objectContaining({ 'X-Examinator-Request': '1' }),
+      }));
+      expect(ids(root)).toEqual(['import-n', 'import-p', 'import-b']);
+      expect(root.textContent).toContain('De import is verwijderd.');
+    });
+
+    it('closes the detail view when the open import is deleted', async () => {
+      const { fixture, root } = await open(all, { 'DELETE /api/imports/import-new': noContent });
+      root.querySelectorAll<HTMLButtonElement>('.import-item')[0].click();
+      await fixture.whenStable();
+      expect(root.querySelector('.review h2')).not.toBeNull();
+      root.querySelectorAll<HTMLButtonElement>('.delete-button')[0].click();
+      await fixture.whenStable();
+      button(root, 'Ja, verwijderen').click();
+      await fixture.whenStable();
+      expect(root.querySelector('.review h2')).toBeNull();
+      expect(root.querySelector('.review')!.textContent).toContain('Selecteer een import');
+    });
+
+    it('keeps the list and the open item when the server refuses the deletion', async () => {
+      const { fixture, root } = await open(all, {
+        'DELETE /api/imports/import-new': () => Response.json(
+          { status: 409, title: 'Conflict', detail: 'Deze import wordt verwerkt en kan nu niet worden verwijderd.' },
+          { status: 409, headers: { 'content-type': 'application/problem+json' } }),
+      });
+      root.querySelectorAll<HTMLButtonElement>('.import-item')[0].click();
+      await fixture.whenStable();
+      root.querySelectorAll<HTMLButtonElement>('.delete-button')[0].click();
+      await fixture.whenStable();
+      button(root, 'Ja, verwijderen').click();
+      await fixture.whenStable();
+      expect(root.querySelector('.error')!.textContent).toContain('wordt verwerkt');
+      expect(ids(root)).toHaveLength(4);
+      expect(root.querySelector('.review h2')).not.toBeNull();
+      expect(root.querySelector('.delete-confirm')).toBeNull();
+    });
+  });
+
+  describe('live progress', () => {
+    const tagging: ImportRecord = { ...record, id: 'import-busy', state: 'tagging', revision: '"v3"', questions: [] };
+    const done: ImportRecord = { ...record, id: 'import-done', createdAt: '2026-11-12T09:00:00Z', state: 'review' };
+    const event = (overrides: Partial<ImportProgressEvent> = {}): ImportProgressEvent => ({
+      importId: 'import-busy', state: 'tagging', revision: '"v3"', phase: 'tagging', step: 7, total: 32, unit: 'vraag',
+      modelCalls: 12, modelCallBudget: 64, message: 'Vraag 7 van 32: onderwerpen toekennen',
+      updatedAt: '2026-11-14T13:32:05Z', heartbeatAt: '2026-11-14T13:32:05Z', serverTime: '2026-11-14T13:32:06Z',
+      stale: false, ...overrides,
+    });
+
+    async function open(listed: ImportRecord[], records: Record<string, ImportRecord> = {}) {
+      const fetch = vi.fn().mockImplementation((url: string) => {
+        if (url === '/api/imports') return Promise.resolve(Response.json(listed));
+        const id = url.replace('/api/imports/', '');
+        const found = records[id] ?? listed.find((item) => item.id === id);
+        return Promise.resolve(found ? Response.json(found)
+          : Response.json({ status: 404, title: 'Niet gevonden' }, { status: 404, headers: { 'content-type': 'application/problem+json' } }));
+      });
+      vi.stubGlobal('fetch', fetch);
+      const fixture = TestBed.createComponent(ExamImportComponent);
+      await fixture.whenStable();
+      const root: HTMLElement = fixture.nativeElement;
+      const loads = (id: string) => fetch.mock.calls.filter(([url]) => url === `/api/imports/${id}`).length;
+      return { fixture, root, fetch, loads };
+    }
+
+    it('opens no stream when nothing is processing', async () => {
+      await open([done]);
+      expect(stream.sources).toHaveLength(0);
+    });
+
+    it('shows compact progress in every processing row from one stream', async () => {
+      const second: ImportRecord = { ...tagging, id: 'import-queued', state: 'queued', createdAt: '2026-11-13T09:00:00Z' };
+      const { fixture, root } = await open([tagging, second, done]);
+      expect(stream.sources).toHaveLength(1);
+      stream.latest().open();
+      stream.latest().emit('progress', event());
+      stream.latest().emit('progress', event({ importId: 'import-queued', state: 'queued', phase: 'queued', step: null,
+        total: null, unit: null, modelCalls: null, modelCallBudget: null, revision: second.revision,
+        message: 'Wachten op de achtergrondtaak (kan tot een minuut duren)' }));
+      await fixture.whenStable();
+      const rows = [...root.querySelectorAll('.import-row')];
+      expect(rows[0].querySelector('app-import-progress')!.textContent).toContain('Vraag 7 van 32');
+      expect(rows[0].querySelector('progress')!.getAttribute('max')).toBe('32');
+      expect(rows[1].querySelector('app-import-progress')!.textContent).toContain('Wachtrij');
+      expect(rows[2].querySelector('app-import-progress')).toBeNull();
+      expect(stream.sources).toHaveLength(1);
+    });
+
+    it('shows the detail stepper, counts, connection and a polite announcement for the selected import', async () => {
+      const { fixture, root } = await open([tagging]);
+      root.querySelector<HTMLButtonElement>('.import-item')!.click();
+      await fixture.whenStable();
+      stream.latest().open();
+      stream.latest().emit('progress', event());
+      await fixture.whenStable();
+      const detail = root.querySelector('.review app-import-progress')!;
+      expect(detail.querySelector('[aria-current="step"]')!.textContent).toBe('Onderwerpen toekennen');
+      expect(detail.textContent).toContain('Vraag 7 van 32');
+      expect(detail.textContent).toContain('Modelaanroepen: 12 van 64');
+      expect(detail.textContent).toMatch(/Laatst bijgewerkt om \d\d:\d\d:\d\d/);
+      expect(detail.querySelector('.connection')!.textContent).toContain('Live');
+      const live = root.querySelector('.visually-hidden[aria-live="polite"]')!;
+      expect(live.textContent).toContain('Onderwerpen toekennen: Vraag 7 van 32');
+      stream.latest().emit('progress', event({ step: 8, message: 'Vraag 8 van 32: onderwerpen toekennen' }));
+      await fixture.whenStable();
+      expect(detail.textContent).toContain('Vraag 8 van 32');
+      expect(live.textContent).toContain('Vraag 7 van 32');
+    });
+
+    it('marks a silent worker as stale and offers to reconnect after live updates fail', async () => {
+      const { fixture, root } = await open([tagging]);
+      root.querySelector<HTMLButtonElement>('.import-item')!.click();
+      await fixture.whenStable();
+      stream.latest().emit('progress', event({ stale: true }));
+      await fixture.whenStable();
+      expect(root.querySelector('.review .stale')!.textContent).toContain('reageert niet');
+      expect(root.querySelector('.import-row .stale')!.textContent).toContain('Geen reactie');
+      stream.latest().fail(true);
+      await fixture.whenStable();
+      expect(root.querySelector('.review .connection')!.textContent).toContain('elke 5 seconden');
+      button(root, 'Opnieuw live verbinden').click();
+      await fixture.whenStable();
+      expect(stream.sources).toHaveLength(2);
+    });
+
+    it('loads a record exactly once when an event carries a newer revision', async () => {
+      const updated = { ...tagging, revision: '"v4"', questions: record.questions };
+      const { fixture, loads } = await open([tagging], { 'import-busy': updated });
+      stream.latest().emit('progress', event({ revision: '"v4"' }));
+      await fixture.whenStable();
+      stream.latest().emit('progress', event({ revision: '"v4"', step: 8 }));
+      await fixture.whenStable();
+      expect(loads('import-busy')).toBe(1);
+    });
+
+    it('refreshes a settled import in place and closes the stream when nothing processes any more', async () => {
+      const reviewed = { ...tagging, state: 'review' as const, revision: '"v9"', questions: record.questions };
+      const { fixture, root, loads } = await open([tagging, done], { 'import-busy': reviewed });
+      stream.latest().emit('progress', event());
+      stream.latest().emit('settled', { importId: 'import-busy', state: 'review', revision: '"v9"' });
+      await fixture.whenStable();
+      expect(loads('import-busy')).toBe(1);
+      expect(root.querySelectorAll('.import-item span')[0].textContent).toBe('Klaar voor beoordeling');
+      expect(root.querySelector('.import-row app-import-progress')).toBeNull();
+      expect(stream.latest().closed).toBe(true);
+    });
+
+    it('removes a row whose import was deleted elsewhere', async () => {
+      const queued = { ...tagging, state: 'queued' as const };
+      const { fixture, root } = await open([queued, done]);
+      stream.latest().emit('settled', { importId: 'import-busy', state: 'deleted', revision: null });
+      await fixture.whenStable();
+      expect(root.querySelectorAll('.import-item')).toHaveLength(1);
+    });
+
+    it('closes the stream while the tab is hidden and reopens it when visible', async () => {
+      const { fixture } = await open([tagging]);
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      await fixture.whenStable();
+      expect(stream.latest().closed).toBe(true);
+      visibility.mockReturnValue('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+      await fixture.whenStable();
+      expect(stream.sources).toHaveLength(2);
+      expect(stream.latest().closed).toBe(false);
+      visibility.mockRestore();
+    });
+
+    it('closes the stream when the component is destroyed', async () => {
+      const { fixture } = await open([tagging]);
+      fixture.destroy();
+      expect(stream.latest().closed).toBe(true);
+    });
   });
 });

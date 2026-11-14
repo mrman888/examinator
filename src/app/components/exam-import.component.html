@@ -3,25 +3,56 @@
     <div><h1 id="import-heading">Importbeheer</h1><p>Biologie · HAVO. Documenten blijven beschermd; alleen goedgekeurde examens komen in de trainer.</p></div>
     <button type="button" (click)="openUpload()" [disabled]="busy()">Examen importeren</button>
   </header>
+  <p class="visually-hidden" role="status" aria-live="polite">{{ announcement() }}</p>
   <div aria-live="polite">
     @if (busy()) { <p role="status">Verzoek verwerken...</p> }
     @if (error()) { <p class="error" role="alert">{{ error() }}</p> }
+    @if (duplicates().length) {
+      <div class="duplicates" role="alert">
+        <p><strong>Dit document is al eerder verwerkt.</strong> Open de bestaande import of verwerk het opgeslagen origineel opnieuw met de onderwerpen hierboven.</p>
+        <ul>
+          @for (duplicate of duplicates(); track duplicate.importId + duplicate.role) {
+            <li>{{ duplicateLabel(duplicate) }}
+              <button type="button" (click)="openDuplicate(duplicate)" [disabled]="busy()">Bestaande import openen</button>
+              <button type="button" (click)="reprocessDuplicate(duplicate)" [disabled]="busy()">Opnieuw verwerken met andere onderwerpen</button>
+            </li>
+          }
+        </ul>
+      </div>
+    }
     @if (notice()) { <p class="notice" role="status">{{ notice() }}</p> }
   </div>
   <div class="import-workspace">
-    <nav aria-label="Opgeslagen imports" class="import-list">
+    <nav #importList tabindex="-1" aria-label="Opgeslagen imports" class="import-list">
       <button type="button" (click)="refreshList()" [disabled]="busy()">Lijst vernieuwen</button>
       @for (record of records(); track record.id) {
-        <button type="button" class="import-item" [class.active]="selected()?.id === record.id"
-          [disabled]="busy()" (click)="select(record)">
-          @if (record.metadata.year === 0) {
-            <strong>Biologie · jaar en tijdvak nog niet vastgesteld</strong>
-          } @else {
-            <strong>Biologie {{ record.metadata.year }} · tijdvak {{ record.metadata.timevak }}</strong>
+        <div class="import-row">
+          <button type="button" class="import-item" [class.active]="selected()?.id === record.id"
+            [disabled]="busy()" (click)="select(record)">
+            @if (record.metadata.year === 0) {
+              <strong>Biologie · jaar en tijdvak nog niet vastgesteld</strong>
+            } @else {
+              <strong>Biologie {{ record.metadata.year }} · tijdvak {{ record.metadata.timevak }}</strong>
+            }
+            <span>{{ stateLabel(record) }}</span>
+            <small>{{ record.createdAt.slice(0, 10) }} · {{ record.id.slice(0, 8) }}</small>
+          </button>
+          @if (progressById().get(record.id); as rowProgress) {
+            <app-import-progress class="row-progress" [progress]="rowProgress" [compact]="true" />
           }
-          <span>{{ stateLabel(record) }}</span>
-          <small>{{ record.createdAt.slice(0, 10) }} · {{ record.id.slice(0, 8) }}</small>
-        </button>
+          @if (deleteCandidate() === record.id) {
+            <div class="delete-confirm" role="group" [attr.aria-label]="'Verwijderen bevestigen voor import ' + record.id.slice(0, 8)">
+              <span>Deze import en bijbehorende gegevens definitief verwijderen?</span>
+              <button type="button" class="danger" (click)="confirmDelete(record)" [disabled]="busy()">Ja, verwijderen</button>
+              <button type="button" (click)="cancelDelete()" [disabled]="busy()">Annuleren</button>
+            </div>
+          } @else {
+            <button type="button" class="delete-button" (click)="askDelete(record)"
+              [disabled]="busy() || !canDelete(record)"
+              [attr.aria-label]="'Import ' + record.id.slice(0, 8) + ' verwijderen'"
+              [attr.title]="canDelete(record) ? 'Verwijderen' : 'Gepubliceerde of lopende imports kunnen niet worden verwijderd'">Verwijderen</button>
+          }
+        </div>
       } @empty { <p>Nog geen imports geladen.</p> }
     </nav>
     <div class="review">
@@ -107,13 +138,15 @@
             @if (!canPublish() && !dirty()) { <p>Controleer alle vragen en ontbrekende antwoordkoppelingen voordat je publiceert.</p> }
           }
         } @else if (record.state !== 'failed' && record.state !== 'cancelled') {
-          <p role="status">De verwerking loopt op de achtergrond. Je kunt deze pagina verlaten en later terugkomen.</p>
+          <app-import-progress [progress]="selectedProgress()" [connection]="connection()"
+            [withDefinitions]="withDefinitions(record)" (reconnect)="reconnectLive()" />
         }
         <div class="actions">
           @if (record.state === 'failed') {
             <p>Opnieuw verwerken kan extra Foundry-kosten veroorzaken.</p>
             <button type="button" (click)="action('retry')" [disabled]="busy()">Opnieuw verwerken</button>
           }
+          <button type="button" (click)="openReprocess(record)" [disabled]="busy()">Opnieuw verwerken met andere onderwerpen</button>
           @if (record.state !== 'published' && record.state !== 'cancelled') {
             <button type="button" (click)="action('cancel')" [disabled]="busy()">Import annuleren</button>
           }
@@ -125,12 +158,40 @@
 
 <dialog #uploadDialog aria-labelledby="upload-heading" (cancel)="preventBusyClose($event)">
   <form #uploadForm (submit)="upload($event)">
-    <div class="actions"><h2 id="upload-heading">Examen importeren</h2>
+    <div class="actions"><h2 id="upload-heading">{{ reprocessSource() ? 'Opnieuw verwerken met andere onderwerpen' : 'Examen importeren' }}</h2>
       <button type="button" (click)="closeUpload()" [disabled]="busy()" aria-label="Importvenster sluiten">Sluiten</button></div>
     <p>Vak: <strong>Biologie</strong> · Niveau: <strong>HAVO</strong>. Andere vakken worden later beschikbaar.</p>
+    @if (reprocessSource()) {
+      <p>Het opgeslagen originele examen en correctievoorschrift worden hergebruikt; er wordt niets opnieuw geupload. De oorspronkelijke import blijft ongewijzigd. Dezelfde zitting kan niet stilzwijgend een eerdere publicatie vervangen.</p>
+    } @else {
     <p>Jaar en tijdvak worden automatisch uit het examen en correctievoorschrift gehaald.</p>
-    <label>Examen PDF (maximaal 20 MiB)<input type="file" name="exam" accept="application/pdf,.pdf" required [disabled]="busy()" /></label>
-    <label>Antwoorden / correctievoorschrift PDF (maximaal 20 MiB)<input type="file" name="answers" accept="application/pdf,.pdf" required [disabled]="busy()" /></label>
+    <fieldset class="pdf-source">
+      <legend>Examen PDF (maximaal 20 MiB)</legend>
+      <label><input type="radio" name="examMode" value="file" [checked]="examMode() === 'file'" [disabled]="busy()"
+        (change)="examMode.set('file')" /> Bestand uploaden</label>
+      <label><input type="radio" name="examMode" value="url" [checked]="examMode() === 'url'" [disabled]="busy()"
+        (change)="examMode.set('url')" /> Link naar PDF (https)</label>
+      @if (examMode() === 'file') {
+        <input type="file" name="exam" accept="application/pdf,.pdf" required [disabled]="busy()" aria-label="Examen PDF: bestand" />
+      } @else {
+        <input type="url" name="examUrl" inputmode="url" maxlength="2048" required placeholder="https://www.alleexamens.nl/..."
+          [disabled]="busy()" aria-label="Examen PDF: link" />
+      }
+    </fieldset>
+    <fieldset class="pdf-source">
+      <legend>Antwoorden / correctievoorschrift PDF (maximaal 20 MiB)</legend>
+      <label><input type="radio" name="answersMode" value="file" [checked]="answersMode() === 'file'" [disabled]="busy()"
+        (change)="answersMode.set('file')" /> Bestand uploaden</label>
+      <label><input type="radio" name="answersMode" value="url" [checked]="answersMode() === 'url'" [disabled]="busy()"
+        (change)="answersMode.set('url')" /> Link naar PDF (https)</label>
+      @if (answersMode() === 'file') {
+        <input type="file" name="answers" accept="application/pdf,.pdf" required [disabled]="busy()" aria-label="Antwoorden / correctievoorschrift PDF: bestand" />
+      } @else {
+        <input type="url" name="answersUrl" inputmode="url" maxlength="2048" required placeholder="https://www.alleexamens.nl/..."
+          [disabled]="busy()" aria-label="Antwoorden / correctievoorschrift PDF: link" />
+      }
+    </fieldset>
+    }
     <details>
       <summary>Hoofdstuk en aanvullende leerinhoud (optioneel)</summary>
       <label>Hoofdstuknummer <input #chapterNumberInput [value]="chapterNumber()" maxlength="40" [disabled]="busy()"
@@ -152,9 +213,7 @@
       </select>
     </label>
     <app-topic-editor [topics]="uploadTopics()" [disabled]="busy()" (topicsChanged)="uploadTopics.set($event)" />
-    <label class="review-check"><input type="checkbox" name="permission" required [disabled]="busy()" />
-      Ik mag deze documenten laten verwerken en opslaan voor deze afgeschermde trainer.</label>
     @if (error()) { <p class="error" role="alert">{{ error() }}</p> }
-    <div class="actions"><button type="submit" [disabled]="busy()">{{ busy() ? 'Documenten opslaan...' : 'Uploaden en verwerken' }}</button></div>
+    <div class="actions"><button type="submit" [disabled]="busy()">{{ busy() ? 'Opslaan...' : reprocessSource() ? 'Opnieuw verwerken' : 'Uploaden en verwerken' }}</button></div>
   </form>
 </dialog>

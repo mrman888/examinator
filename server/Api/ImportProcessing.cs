@@ -61,8 +61,12 @@ public sealed class PdfRenderer : IPdfRenderer
     }
 }
 
+/// <summary>
+/// Runs one leased processing attempt. Live progress is reported through the optional reporter (worker only);
+/// it never writes the import record and its failures never fail the import.
+/// </summary>
 public sealed class ImportProcessor(IImportPersistence storage, IImportModel model, IPdfRenderer renderer,
-    IConfiguration configuration, ILogger<ImportProcessor> logger)
+    IConfiguration configuration, ILogger<ImportProcessor> logger, ImportProgressReporter? progress = null)
 {
     public const int MaximumProcessingAttempts = 10;
 
@@ -77,6 +81,9 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             record = await storage.WriteAsync(record with { ProcessingAttempts = record.ProcessingAttempts + 1 },
                 record.Revision, cancellationToken);
             var work = await storage.ReadWorkAsync(id, cancellationToken);
+            var attempt = record.ProcessingAttempts;
+            var spent = work?.ModelCalls ?? 0;
+            await Report(reporter => reporter.StartAsync(id, attempt, spent, ModelCallBudget, cancellationToken));
             if (work?.PendingCall is not null)
                 throw new InvalidDataException("Een modelaanroep is onderbroken. Kies bewust opnieuw verwerken; dit kan extra modelkosten veroorzaken.");
             if (work is not null && (work.PromptVersion != ImportModel.PromptVersion ||
@@ -85,7 +92,9 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             if (work is null)
             {
                 record = await SaveState(record, "extracting", cancellationToken);
+                await Report(reporter => reporter.PhaseAsync("extracting", "Examen-PDF uitlezen (1 van 2)", cancellationToken, 1, 2, "document"));
                 var exam = await Extract(record.ExamDocumentId, cancellationToken);
+                await Report(reporter => reporter.StepAsync("extracting", 2, 2, "document", "Correctievoorschrift uitlezen (2 van 2)", cancellationToken));
                 var answers = await Extract(record.AnswerDocumentId, cancellationToken);
                 work = new ImportWork(exam, answers, [], new(exam.Pages.Length, answers.Pages.Length, false, false),
                     Blocks(exam, "exam").Concat(Blocks(answers, "answers")).ToArray(), 0, 0,
@@ -105,6 +114,7 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                     context = $"data:{document.ContentType};base64,{Convert.ToBase64String(bytes.ToArray())}";
                 }
                 work = await BeginCall(id, work, "chapter-definitions", cancellationToken);
+                await Report(reporter => reporter.PhaseAsync("definitions", "Hoofdstukdefinities voorstellen", cancellationToken));
                 var topics = await model.PrepareTopicsAsync(record, context, cancellationToken);
                 record = await storage.WriteAsync(record with { Topics = topics, State = "awaitingDefinitions" }, record.Revision, cancellationToken);
                 await storage.WriteWorkAsync(id, work with { ContextPrepared = true, PendingCall = null }, cancellationToken);
@@ -116,11 +126,18 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                 work = work with { ApprovedTopics = record.Topics };
                 await storage.WriteWorkAsync(id, work, cancellationToken);
             }
-            var examImages = await Render(record.ExamDocumentId, work.Exam.Pages.Length, "exam", cancellationToken);
-            var answerImages = await Render(record.AnswerDocumentId, work.Answers.Pages.Length, "answers", cancellationToken);
+            var examPages = work.Exam.Pages.Length;
+            var answerPages = work.Answers.Pages.Length;
+            await Report(reporter => reporter.PhaseAsync("rendering", $"Pagina's renderen: examen ({Pages(examPages)})",
+                cancellationToken, 1, 2, "document"));
+            var examImages = await Render(record.ExamDocumentId, examPages, "exam", cancellationToken);
+            await Report(reporter => reporter.StepAsync("rendering", 2, 2, "document",
+                $"Pagina's renderen: correctievoorschrift ({Pages(answerPages)})", cancellationToken));
+            var answerImages = await Render(record.AnswerDocumentId, answerPages, "answers", cancellationToken);
             if (work.ExamInventory is null)
             {
                 work = await BeginCall(id, work, "exam-inventory", cancellationToken);
+                await Report(reporter => reporter.PhaseAsync("inventory", "Vragen inventariseren in het examen", cancellationToken, 1, 2, "document"));
                 var inventory = await model.InventoryAsync(record.Metadata, work.Exam, examImages, "exam", cancellationToken);
                 work = work with { ExamInventory = inventory, PendingCall = null };
                 await storage.WriteWorkAsync(id, work, cancellationToken);
@@ -128,6 +145,8 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             if (work.AnswerInventory is null)
             {
                 work = await BeginCall(id, work, "answer-inventory", cancellationToken);
+                await Report(reporter => reporter.StepAsync("inventory", 2, 2, "document",
+                    "Vragen inventariseren in het correctievoorschrift", cancellationToken));
                 var inventory = await model.InventoryAsync(record.Metadata, work.Answers, answerImages, "answers", cancellationToken);
                 work = work with { AnswerInventory = inventory, PendingCall = null };
                 await storage.WriteWorkAsync(id, work, cancellationToken);
@@ -159,6 +178,7 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                     }
                 }, record.Revision, cancellationToken);
             }
+            await Report(reporter => reporter.PhaseAsync("aligning", "Antwoorden koppelen", cancellationToken));
             if (work.Inventory.Length == 0)
             {
                 var questions = QuestionAlignment.Align(record.Metadata, work.ExamInventory.Questions,
@@ -180,6 +200,10 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                 var images = examImages.Where(image => image.Page >= question.ExamPage && image.Page <= question.ExamEndPage)
                     .Concat(answerImages.Where(image => image.Page >= question.AnswerPage && image.Page <= question.AnswerEndPage)).ToArray();
                 work = await BeginCall(id, work, $"question-{question.Number}", cancellationToken);
+                var step = index + 1;
+                var total = record.Questions.Length;
+                await Report(reporter => reporter.StepAsync("tagging", step, total, "vraag",
+                    $"Vraag {step} van {total}: onderwerpen toekennen", cancellationToken));
                 var result = await model.ClassifyAsync(question, record.Topics, blocks, images, cancellationToken);
                 var questions = record.Questions.ToArray();
                 questions[index] = question with
@@ -197,6 +221,7 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                 };
                 await storage.WriteWorkAsync(id, work, cancellationToken);
             }
+            await Report(reporter => reporter.PhaseAsync("finishing", "Resultaten opslaan voor beoordeling", cancellationToken));
             await SaveState(record, "review", cancellationToken);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or ArgumentException or HttpRequestException or
@@ -213,16 +238,35 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
                         "De verwerking is onderbroken. Controleer document/configuratie en kies bewust opnieuw verwerken; dit kan modelkosten veroorzaken."
                 }, latest.Revision, CancellationToken.None);
         }
+        finally
+        {
+            await Report(reporter => reporter.FlushAsync(CancellationToken.None));
+        }
+    }
+
+    private int ModelCallBudget => configuration.GetValue("Import:MaximumModelCalls", 64);
+
+    private static string Pages(int count) => count == 1 ? "1 pagina" : $"{count} pagina's";
+
+    /// <summary>Progress is best effort: the reporter swallows storage failures, and this guards everything else.</summary>
+    private async Task Report(Func<ImportProgressReporter, Task> report)
+    {
+        if (progress is null) return;
+        try { await report(progress); }
+        catch (Exception exception)
+        {
+            logger.LogWarning("Import progress reporting failed with {ErrorType}.", exception.GetType().Name);
+        }
     }
 
     private async Task<ImportWork> BeginCall(string id, ImportWork work, string stage, CancellationToken ct)
     {
         var latest = await storage.ReadAsync(id, ct);
         if (latest?.State == "cancelled") throw new OperationCanceledException("The import was cancelled.", ct);
-        var maxCalls = configuration.GetValue("Import:MaximumModelCalls", 64);
-        if (work.ModelCalls >= maxCalls) throw new InvalidDataException("Het ingestelde maximum aantal modelaanroepen voor deze import is bereikt.");
+        if (work.ModelCalls >= ModelCallBudget) throw new InvalidDataException("Het ingestelde maximum aantal modelaanroepen voor deze import is bereikt.");
         work = work with { ModelCalls = work.ModelCalls + 1, PendingCall = stage };
         await storage.WriteWorkAsync(id, work, ct);
+        progress?.ModelCalls(work.ModelCalls);
         return work;
     }
 

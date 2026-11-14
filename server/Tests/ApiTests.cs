@@ -103,13 +103,41 @@ public sealed class ApiTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/catalog")).StatusCode);
         using var client = app.AuthenticatedClient();
         Assert.Contains("biology", await client.GetStringAsync("/api/subjects"));
-        foreach (var path in new[] { "/api/catalog?subjectId=biology", "/api/imports", "/api/imports/id", "/api/documents/id" })
+        foreach (var path in new[] { "/api/catalog?subjectId=biology", "/api/imports", "/api/imports/events", "/api/imports/id", "/api/documents/id" })
             Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync(path)).StatusCode);
         foreach (var path in new[] { "/api/imports", "/api/imports/id/confirm-definitions",
-            "/api/imports/id/publish", "/api/imports/id/cancel", "/api/imports/id/retry" })
+            "/api/imports/id/publish", "/api/imports/id/cancel", "/api/imports/id/retry", "/api/imports/id/reprocess" })
             Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsync(path, null)).StatusCode);
         Assert.Equal(HttpStatusCode.ServiceUnavailable,
             (await client.PatchAsync("/api/imports/id/draft", JsonContent.Create(new { }))).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.DeleteAsync("/api/imports/id")).StatusCode);
+        Assert.Equal(0, app.Foundry.Calls);
+    }
+
+    [Fact]
+    public async Task DeleteEndpointRequiresGatewayRemovesTheImportAndReportsConflicts()
+    {
+        await using var app = new ApiFactory(imports: true);
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.DeleteAsync("/api/imports/id")).StatusCode);
+        using var client = app.AuthenticatedClient();
+        using var content = new MultipartFormDataContent();
+        var form = ImportProcessorTests.Form();
+        content.Add(new StringContent(form["metadata"].ToString()), "metadata");
+        foreach (var file in form.Files)
+        {
+            using var bytes = new MemoryStream();
+            await file.CopyToAsync(bytes);
+            content.Add(new ByteArrayContent(bytes.ToArray()), file.Name, file.FileName);
+        }
+        using var uploaded = await client.PostAsync("/api/imports", content);
+        var record = (await uploaded.Content.ReadFromJsonAsync<ImportRecord>())!;
+
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync("/api/imports/not-an-id")).StatusCode);
+        using var deleted = await client.DeleteAsync($"/api/imports/{record.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/imports/{record.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/api/imports/{record.Id}")).StatusCode);
         Assert.Equal(0, app.Foundry.Calls);
     }
 
@@ -150,6 +178,45 @@ public sealed class ApiTests
         Assert.Equal(0, app.Foundry.Calls);
     }
 
+    [Fact]
+    public async Task ProgressEventsStreamRequiresGatewayAndStartsWithTheRetryFrame()
+    {
+        await using var app = new ApiFactory(imports: true);
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/imports/events")).StatusCode);
+        using var client = app.AuthenticatedClient();
+        using var response = await client.GetAsync("/api/imports/events", HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("no-transform", response.Headers.CacheControl?.ToString());
+        Assert.Equal("no", response.Headers.GetValues("X-Accel-Buffering").Single());
+        await using var body = await response.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(body);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Assert.Equal("retry: 3000", await reader.ReadLineAsync(timeout.Token));
+        Assert.Equal(0, app.Foundry.Calls);
+    }
+
+    [Fact]
+    public async Task ProgressEventsStreamsAreCappedPerReplica()
+    {
+        await using var app = new ApiFactory(imports: true);
+        using var client = app.AuthenticatedClient();
+        var open = new List<HttpResponseMessage>();
+        try
+        {
+            for (var index = 0; index < 4; index++)
+            {
+                var response = await client.GetAsync("/api/imports/events", HttpCompletionOption.ResponseHeadersRead);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                open.Add(response);
+            }
+            using var rejected = await client.GetAsync("/api/imports/events", HttpCompletionOption.ResponseHeadersRead);
+            Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+        }
+        finally { open.ForEach(response => response.Dispose()); }
+    }
+
     private sealed class ApiFactory(bool imports = false) : WebApplicationFactory<ApiAssemblyMarker>
     {
         public const string TenantId = "11111111-1111-1111-1111-111111111111";
@@ -183,7 +250,12 @@ public sealed class ApiTests
                 {
                     services.RemoveAll<IImportPersistence>();
                     services.AddSingleton<IImportPersistence>(store);
+                    services.AddSingleton<IPdfDownloader, NoDownloader>();
                     services.AddScoped<IExamImports, ExamImports>();
+                    services.AddSingleton(TimeProvider.System);
+                    services.AddSingleton(new ImportProgressStreamOptions());
+                    services.AddSingleton<ImportProgressStreamGate>();
+                    services.AddTransient<ImportProgressStream>();
                 }
                 services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                 {

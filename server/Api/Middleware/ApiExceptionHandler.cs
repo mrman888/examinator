@@ -25,8 +25,10 @@ public sealed class ApiExceptionHandler(ILogger<ApiExceptionHandler> logger) : I
         };
         logger.LogError("Request failed: {ErrorType}; status {Status}", exception.GetType().Name, status);
         context.Response.StatusCode = status;
-        await context.Response.WriteAsJsonAsync(new ProblemDetails { Status = status, Title = title },
-            cancellationToken);
+        var problemDetails = new ProblemDetails { Status = status, Title = title };
+        if (exception is ImportProblem importProblem) problemDetails.Detail = importProblem.Message;
+        if (exception is ImportDuplicateProblem duplicate) problemDetails.Extensions["duplicates"] = duplicate.Duplicates;
+        await context.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
         return true;
     }
 }

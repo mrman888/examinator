@@ -1,8 +1,16 @@
+import { DOCUMENT } from '@angular/common';
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, effect, inject, linkedSignal, output, signal, viewChild } from '@angular/core';
 import { ExamDataService } from '../services/exam-data.service';
-import { type DraftQuestion, type ImportRecord, type ImportState, type TopicDefinition,
-  listImports, loadImport, updateImport, uploadImport } from '../services/exam-import-client';
+import { type DraftQuestion, type ImportProgressEvent, type ImportRecord, type ImportSettledEvent, type ImportState,
+  type TopicDefinition, type DuplicateImport, ImportRequestError, deleteImport, listImports, loadImport, reprocessImport,
+  updateImport, uploadImport } from '../services/exam-import-client';
+import { PROGRESS_STREAM_DEPS, type ProgressStreamHandle, type StreamConnection,
+  watchImportProgress } from '../services/import-progress-stream';
+import { removeImport, sortImports, upsertImport } from './import-order';
+import { type AnnouncementInput, announcement } from './import-progress-logic';
+import { type PdfSourceMode, applyPdfSource, pdfSourceError } from './import-source';
 import { ImportPdfPreviewComponent } from './import-pdf-preview.component';
+import { ImportProgressComponent } from './import-progress.component';
 import { TopicEditorComponent } from './topic-editor.component';
 
 const STATE_LABELS: Record<ImportState, string> = {
@@ -11,13 +19,17 @@ const STATE_LABELS: Record<ImportState, string> = {
   published: 'Gepubliceerd', failed: 'Mislukt', cancelled: 'Geannuleerd',
 };
 
+function deletable(record: ImportRecord): boolean {
+  return !['published', 'extracting', 'aligning', 'tagging'].includes(record.state);
+}
+
 function processing(record: ImportRecord | null): boolean {
   return !!record && ['queued', 'extracting', 'aligning', 'tagging'].includes(record.state);
 }
 
 @Component({
   selector: 'app-exam-import',
-  imports: [TopicEditorComponent, ImportPdfPreviewComponent],
+  imports: [TopicEditorComponent, ImportPdfPreviewComponent, ImportProgressComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './exam-import.component.html',
   styleUrl: './exam-import.component.scss',
@@ -26,18 +38,35 @@ export class ExamImportComponent {
   readonly published = output<void>();
   private readonly data = inject(ExamDataService);
   private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('uploadDialog');
+  private readonly importList = viewChild.required<ElementRef<HTMLElement>>('importList');
   private readonly uploadForm = viewChild.required<ElementRef<HTMLFormElement>>('uploadForm');
+  private readonly document = inject(DOCUMENT);
+  private readonly streamDeps = inject(PROGRESS_STREAM_DEPS);
   private request?: AbortController;
   private destroyed = false;
+  private stream: ProgressStreamHandle | null = null;
+  /** One background record load per import; a newer event during a load schedules exactly one more. */
+  private readonly refreshing = new Map<string, AbortController>();
+  private readonly refreshAgain = new Set<string>();
+  private listPoll: AbortController | null = null;
+  private readonly progress = signal<ReadonlyMap<string, ImportProgressEvent>>(new Map());
+  private readonly visible = signal(true);
+  protected readonly progressById = this.progress.asReadonly();
+  protected readonly connection = signal<StreamConnection | null>(null);
   protected readonly records = signal<ImportRecord[]>([]);
   protected readonly selected = signal<ImportRecord | null>(null);
+  protected readonly deleteCandidate = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly error = signal('');
   protected readonly notice = signal('');
   protected readonly chapterNumber = signal('');
   protected readonly chapterTitle = signal('');
   protected readonly contextText = signal('');
+  protected readonly examMode = signal<PdfSourceMode>('file');
+  protected readonly answersMode = signal<PdfSourceMode>('file');
   protected readonly uploadTopics = signal<TopicDefinition[]>([]);
+  protected readonly duplicates = signal<DuplicateImport[]>([]);
+  protected readonly reprocessSource = signal<ImportRecord | null>(null);
   protected readonly availableTopics = this.data.topicDefinitions;
   protected readonly draftTopics = linkedSignal(() => structuredClone(this.selected()?.topics ?? []));
   protected readonly draftQuestions = linkedSignal(() => structuredClone(this.selected()?.questions ?? []));
@@ -52,32 +81,133 @@ export class ExamImportComponent {
   protected readonly canPublish = computed(() => !this.dirty() && this.selected()?.state === 'review' &&
     this.draftQuestions().length > 0 && this.draftQuestions().every((question) =>
       !question.needsReview && question.answerPage !== null && question.answerEndPage !== null));
+  /** A boolean, so record updates do not reopen the stream; it only runs while something processes and the tab is visible. */
+  private readonly watching = computed(() => this.visible() && this.records().some(processing));
+  protected readonly selectedProgress = computed(() => {
+    const selected = this.selected();
+    return selected && processing(selected) ? this.progressById().get(selected.id) ?? null : null;
+  });
+  /** Spoken for the selected import only, and only on meaningful changes (see `announcement`). */
+  protected readonly announcement = linkedSignal<AnnouncementInput, string>({
+    source: () => ({ progress: this.selectedProgress(), connection: this.connection() }),
+    computation: (next, previous) => announcement(previous?.source ?? null, next) ?? previous?.value ?? '',
+  });
 
   constructor() {
     const destroyRef = inject(DestroyRef);
+    const onVisibility = () => this.visible.set(this.document.visibilityState !== 'hidden');
+    onVisibility();
+    this.document.addEventListener('visibilitychange', onVisibility);
     destroyRef.onDestroy(() => {
       this.destroyed = true;
       this.request?.abort();
+      this.listPoll?.abort();
+      this.refreshing.forEach((controller) => controller.abort());
+      this.document.removeEventListener('visibilitychange', onVisibility);
     });
+    // EventSource is an imperative browser API; the stream closes on hidden tabs, destroy and when nothing processes.
     effect((onCleanup) => {
-      const selected = this.selected();
-      if (!processing(selected) || this.busy() || !selected) return;
-      const controller = new AbortController();
-      const timer = setTimeout(() => {
-        void loadImport(selected.id, controller.signal).then((record) => {
-          if (!controller.signal.aborted && !this.destroyed) this.accept(record);
-        }, (error: unknown) => {
-          if (!controller.signal.aborted && !this.destroyed) {
-            this.error.set(this.message(error));
-          }
-        });
-      }, 5000);
+      if (!this.watching()) return;
+      const handle = watchImportProgress({
+        onEvent: (event) => this.onProgress(event),
+        onSettled: (event) => this.onSettled(event),
+        onConnection: (state) => this.connection.set(state === 'closed' ? null : state),
+        onPoll: () => this.pollList(),
+      }, this.streamDeps);
+      this.stream = handle;
       onCleanup(() => {
-        clearTimeout(timer);
-        controller.abort();
+        handle.dispose();
+        if (this.stream === handle) this.stream = null;
       });
     });
     void this.refreshList();
+  }
+
+  protected reconnectLive(): void {
+    this.stream?.reconnectLive();
+  }
+
+  protected withDefinitions(record: ImportRecord): boolean {
+    return !!record.contextDocumentId || !!record.contextText?.trim();
+  }
+
+  private onProgress(event: ImportProgressEvent): void {
+    this.progress.update((map) => new Map(map).set(event.importId, event));
+    const row = this.records().find((record) => record.id === event.importId);
+    if (!row || row.revision !== event.revision) this.refreshRecord(event.importId);
+  }
+
+  private onSettled(event: ImportSettledEvent): void {
+    this.dropProgress(event.importId);
+    if (event.state === 'deleted') {
+      this.forget(event.importId);
+      return;
+    }
+    const row = this.records().find((record) => record.id === event.importId);
+    if (!row || row.revision !== event.revision || row.state !== event.state) this.refreshRecord(event.importId);
+  }
+
+  private refreshRecord(id: string): void {
+    if (this.destroyed) return;
+    if (this.refreshing.has(id)) {
+      this.refreshAgain.add(id);
+      return;
+    }
+    const controller = new AbortController();
+    this.refreshing.set(id, controller);
+    void loadImport(id, controller.signal).then((record) => {
+      if (!controller.signal.aborted && !this.destroyed) this.applyRecord(record);
+    }, (error: unknown) => {
+      if (!controller.signal.aborted && !this.destroyed && error instanceof ImportRequestError && error.status === 404) {
+        this.forget(id);
+      }
+    }).finally(() => {
+      this.refreshing.delete(id);
+      if (this.refreshAgain.delete(id) && !controller.signal.aborted) this.refreshRecord(id);
+    });
+  }
+
+  /** Fallback while live updates are unavailable: reload the list every 5 seconds. */
+  private pollList(): void {
+    if (this.listPoll || this.destroyed) return;
+    const controller = new AbortController();
+    this.listPoll = controller;
+    void listImports(controller.signal).then((records) => {
+      if (controller.signal.aborted || this.destroyed) return;
+      this.records.set(sortImports(records));
+      const selected = this.selected();
+      const fresh = selected && records.find((record) => record.id === selected.id);
+      if (fresh && fresh.revision !== selected.revision && !this.dirty()) this.selected.set(fresh);
+      for (const record of records) if (!processing(record)) this.dropProgress(record.id);
+    }, () => undefined).finally(() => {
+      if (this.listPoll === controller) this.listPoll = null;
+    });
+  }
+
+  /** Replaces a background-refreshed record in place without changing the selection or unsaved edits. */
+  private applyRecord(record: ImportRecord): void {
+    this.records.update((records) => upsertImport(records, record));
+    const selected = this.selected();
+    if (selected?.id === record.id && selected.revision !== record.revision && !this.dirty()) this.selected.set(record);
+    if (!processing(record)) this.dropProgress(record.id);
+  }
+
+  private dropProgress(id: string): void {
+    if (!this.progress().has(id)) return;
+    this.progress.update((map) => {
+      const next = new Map(map);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  private forget(id: string): void {
+    this.dropProgress(id);
+    this.records.update((records) => removeImport(records, id));
+    if (this.selected()?.id === id && !this.dirty()) {
+      this.selected.set(null);
+      this.selectedQuestionId.set('');
+    }
   }
 
   protected stateLabel(record: ImportRecord): string {
@@ -95,8 +225,40 @@ export class ExamImportComponent {
     }
     this.error.set('');
     this.notice.set('');
+    this.duplicates.set([]);
+    this.reprocessSource.set(null);
     this.uploadTopics.set(structuredClone(this.data.topicDefinitions()));
     this.dialog().nativeElement.showModal();
+  }
+
+  protected openReprocess(source: ImportRecord): void {
+    this.openUpload();
+    if (this.dialog().nativeElement.open) {
+      this.reprocessSource.set(source);
+      this.uploadTopics.set(structuredClone(source.topics));
+      this.chapterNumber.set(source.metadata.chapterNumber);
+      this.chapterTitle.set(source.metadata.chapterTitle);
+      this.contextText.set(source.contextText ?? '');
+    }
+  }
+
+  protected async openDuplicate(duplicate: DuplicateImport): Promise<void> {
+    this.dialog().nativeElement.close();
+    await this.run(async (signal) => {
+      this.accept(await loadImport(duplicate.importId, signal));
+      this.selectedQuestionId.set('');
+    });
+  }
+
+  protected async reprocessDuplicate(duplicate: DuplicateImport): Promise<void> {
+    if (!this.validTopics(this.uploadTopics())) return;
+    await this.reprocess(duplicate.importId, new FormData(this.uploadForm().nativeElement));
+  }
+
+  protected duplicateLabel(duplicate: DuplicateImport): string {
+    const sitting = duplicate.year ? `${duplicate.year}, tijdvak ${duplicate.timevak}` : 'tijdvak nog onbekend';
+    const state = (STATE_LABELS as Record<string, string>)[duplicate.state] ?? 'Onbekende status';
+    return `${duplicate.role === 'exam' ? 'Examen' : 'Antwoorddocument'} in eerdere import (${sitting}, ${state})`;
   }
 
   protected closeUpload(): void {
@@ -115,7 +277,7 @@ export class ExamImportComponent {
   }
 
   protected async refreshList(): Promise<void> {
-    await this.run(async (signal) => { this.records.set(await listImports(signal)); });
+    await this.run(async (signal) => { this.records.set(sortImports(await listImports(signal))); });
   }
 
   protected async select(record: ImportRecord): Promise<void> {
@@ -146,36 +308,76 @@ export class ExamImportComponent {
     const form = this.uploadForm().nativeElement;
     if (!form.reportValidity()) return;
     const data = new FormData(form);
-    const exam = data.get('exam');
-    const answers = data.get('answers');
-    const context = data.get('context');
-    if (!(exam instanceof File) || !(answers instanceof File) || !exam.size || !answers.size) {
-      this.error.set('Kies het examen en het bijbehorende antwoorddocument.');
+    const source = this.reprocessSource();
+    if (source) {
+      if (!this.validTopics(this.uploadTopics())) return;
+      await this.reprocess(source.id, data);
       return;
     }
-    if (exam.size > 20 * 1024 * 1024 || answers.size > 20 * 1024 * 1024 ||
-      (context instanceof File && context.size > 5 * 1024 * 1024)) {
+    const context = data.get('context');
+    const sourceError = pdfSourceError('het examen', this.examMode(), data.get('exam'), data.get('examUrl')) ??
+      pdfSourceError('het antwoorddocument', this.answersMode(), data.get('answers'), data.get('answersUrl'));
+    if (sourceError) {
+      this.error.set(sourceError);
+      return;
+    }
+    if (context instanceof File && context.size > 5 * 1024 * 1024) {
       this.error.set('Maximaal 20 MiB per PDF en 5 MiB voor de hoofdstukscreenshot.');
       return;
     }
     if (!this.validTopics(this.uploadTopics())) return;
     if (context instanceof File && !context.size) data.delete('context');
-    data.delete('permission');
+    applyPdfSource(data, 'exam', this.examMode());
+    applyPdfSource(data, 'answers', this.answersMode());
+    data.delete('examMode');
+    data.delete('answersMode');
     data.set('metadata', JSON.stringify({
       subjectId: 'biology', level: 'havo', year: 0, timevak: 0,
       chapterNumber: this.chapterNumber().trim(), chapterTitle: this.chapterTitle().trim(),
       topics: this.uploadTopics(),
     }));
     data.set('contextText', this.contextText().trim());
+    this.duplicates.set([]);
     await this.run(async (signal) => {
-      const record = await uploadImport(data, signal);
+      let record: ImportRecord;
+      try {
+        record = await uploadImport(data, signal);
+      } catch (error: unknown) {
+        if (error instanceof ImportRequestError && error.duplicates.length) this.duplicates.set(error.duplicates);
+        throw error;
+      }
       if (signal.aborted) return;
       this.accept(record);
       this.dialog().nativeElement.close();
-      form.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => { input.value = ''; });
-      const permission = form.querySelector<HTMLInputElement>('input[name="permission"]');
-      if (permission) permission.checked = false;
+      form.querySelectorAll<HTMLInputElement>('input[type="file"], input[type="url"]').forEach((input) => { input.value = ''; });
+      this.examMode.set('file');
+      this.answersMode.set('file');
       this.notice.set('De documenten zijn opgeslagen. De verwerking loopt op de achtergrond; publicatie volgt pas na goedkeuring.');
+    });
+  }
+
+  private async reprocess(sourceId: string, form: FormData): Promise<void> {
+    const data = new FormData();
+    const context = form.get('context');
+    if (context instanceof File && context.size > 5 * 1024 * 1024) {
+      this.error.set('Maximaal 5 MiB voor de hoofdstukscreenshot.');
+      return;
+    }
+    if (context instanceof File && context.size) data.set('context', context);
+    data.set('metadata', JSON.stringify({
+      subjectId: 'biology', level: 'havo', year: 0, timevak: 0,
+      chapterNumber: this.chapterNumber().trim(), chapterTitle: this.chapterTitle().trim(),
+      topics: this.uploadTopics(),
+    }));
+    data.set('contextText', this.contextText().trim());
+    this.duplicates.set([]);
+    await this.run(async (signal) => {
+      const record = await reprocessImport(sourceId, data, signal);
+      if (signal.aborted) return;
+      this.accept(record);
+      this.dialog().nativeElement.close();
+      this.reprocessSource.set(null);
+      this.notice.set('De import wordt opnieuw verwerkt met de nieuwe onderwerpen. Het originele document is niet opnieuw geupload; publicatie volgt pas na goedkeuring.');
     });
   }
 
@@ -260,7 +462,43 @@ export class ExamImportComponent {
   private accept(record: ImportRecord): void {
     if (this.destroyed) return;
     this.selected.set(record);
-    this.records.update((records) => [record, ...records.filter((item) => item.id !== record.id)]);
+    this.records.update((records) => upsertImport(records, record));
+  }
+
+  protected canDelete(record: ImportRecord): boolean {
+    return deletable(record);
+  }
+
+  protected askDelete(record: ImportRecord): void {
+    this.deleteCandidate.set(record.id);
+  }
+
+  protected cancelDelete(): void {
+    this.deleteCandidate.set(null);
+  }
+
+  protected async confirmDelete(record: ImportRecord): Promise<void> {
+    let removed = false;
+    await this.run(async (signal) => {
+      try {
+        await deleteImport(record.id, signal);
+      } catch (error: unknown) {
+        this.deleteCandidate.set(null);
+        throw error;
+      }
+      if (signal.aborted || this.destroyed) return;
+      this.deleteCandidate.set(null);
+      this.records.update((records) => removeImport(records, record.id));
+      if (this.selected()?.id === record.id) {
+        this.selected.set(null);
+        this.selectedQuestionId.set('');
+      }
+      this.notice.set('De import is verwijderd.');
+      removed = true;
+    });
+    if (removed && !this.destroyed) {
+      this.importList().nativeElement.focus();
+    }
   }
 
   private message(error: unknown): string {

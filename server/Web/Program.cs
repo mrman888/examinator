@@ -26,6 +26,8 @@ builder.Services.AddSingleton<TokenCredential>(_ => builder.Environment.IsDevelo
 builder.Services.AddHttpClient<IGatewayClient, GatewayClient>(client => client.Timeout = TimeSpan.FromSeconds(110));
 builder.Services.AddHttpClient<IImportGateway, ImportGateway>(client => client.Timeout = TimeSpan.FromSeconds(110))
     .ConfigurePrimaryHttpMessageHandler(ImportGateway.CreateHandler);
+builder.Services.AddHttpClient<IImportEventsGateway, ImportEventsGateway>(client => client.Timeout = Timeout.InfiniteTimeSpan)
+    .ConfigurePrimaryHttpMessageHandler(ImportGateway.CreateHandler);
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GatewayExceptionHandler>();
 builder.Services.AddRateLimiter(options =>
