@@ -6,11 +6,15 @@ import { type DraftQuestion, type ImportProgressEvent, type ImportRecord, type I
   updateImport, uploadImport } from '../services/exam-import-client';
 import { PROGRESS_STREAM_DEPS, type ProgressStreamHandle, type StreamConnection,
   watchImportProgress } from '../services/import-progress-stream';
+import { approveAll as approveQuestions, attentionSummary } from './import-approval';
 import { removeImport, sortImports, upsertImport } from './import-order';
 import { type AnnouncementInput, announcement } from './import-progress-logic';
 import { type PdfSourceMode, applyPdfSource, pdfSourceError } from './import-source';
 import { ImportPdfPreviewComponent } from './import-pdf-preview.component';
 import { ImportProgressComponent } from './import-progress.component';
+import { ImportStepsComponent } from './import-steps.component';
+import { combineTiming, formatDateTime, processedText } from './import-timing';
+import { ImportSummaryComponent } from './import-summary.component';
 import { TopicEditorComponent } from './topic-editor.component';
 
 const STATE_LABELS: Record<ImportState, string> = {
@@ -29,7 +33,8 @@ function processing(record: ImportRecord | null): boolean {
 
 @Component({
   selector: 'app-exam-import',
-  imports: [TopicEditorComponent, ImportPdfPreviewComponent, ImportProgressComponent],
+  imports: [TopicEditorComponent, ImportPdfPreviewComponent, ImportProgressComponent, ImportSummaryComponent,
+    ImportStepsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './exam-import.component.html',
   styleUrl: './exam-import.component.scss',
@@ -66,6 +71,7 @@ export class ExamImportComponent {
   protected readonly answersMode = signal<PdfSourceMode>('file');
   protected readonly uploadTopics = signal<TopicDefinition[]>([]);
   protected readonly duplicates = signal<DuplicateImport[]>([]);
+  protected readonly approveAllPending = signal(false);
   protected readonly reprocessSource = signal<ImportRecord | null>(null);
   protected readonly availableTopics = this.data.topicDefinitions;
   protected readonly draftTopics = linkedSignal(() => structuredClone(this.selected()?.topics ?? []));
@@ -81,12 +87,27 @@ export class ExamImportComponent {
   protected readonly canPublish = computed(() => !this.dirty() && this.selected()?.state === 'review' &&
     this.draftQuestions().length > 0 && this.draftQuestions().every((question) =>
       !question.needsReview && question.answerPage !== null && question.answerEndPage !== null));
+  protected readonly approvedCount = computed(() => this.draftQuestions().filter((question) => !question.needsReview).length);
+  /** Real validation issues of unconfirmed questions, derived so it follows single checkbox changes too. */
+  protected readonly attention = computed(() => attentionSummary(this.draftQuestions(), this.draftTopics()));
+  protected readonly attentionLimit = 8;
   /** A boolean, so record updates do not reopen the stream; it only runs while something processes and the tab is visible. */
   private readonly watching = computed(() => this.visible() && this.records().some(processing));
   protected readonly selectedProgress = computed(() => {
     const selected = this.selected();
     return selected && processing(selected) ? this.progressById().get(selected.id) ?? null : null;
   });
+  /** The record's step log of all runs, with the live current run from the stream while it processes. */
+  protected readonly selectedTiming = computed(() => {
+    const selected = this.selected();
+    return selected ? combineTiming(selected.timing, this.selectedProgress()?.timing) : null;
+  });
+  protected readonly selectedProcessing = computed(() => processing(this.selected()));
+  /** "Bijgewerkt" and, once processing has finished, "Verwerkt in" per list row. */
+  protected readonly rowTimes = computed(() => new Map(this.records().map((record) => [record.id, {
+    updated: formatDateTime(record.updatedAt),
+    processed: processedText(record.state, record.timing),
+  }])));
   /** Spoken for the selected import only, and only on meaningful changes (see `announcement`). */
   protected readonly announcement = linkedSignal<AnnouncementInput, string>({
     source: () => ({ progress: this.selectedProgress(), connection: this.connection() }),
@@ -177,7 +198,8 @@ export class ExamImportComponent {
       this.records.set(sortImports(records));
       const selected = this.selected();
       const fresh = selected && records.find((record) => record.id === selected.id);
-      if (fresh && fresh.revision !== selected.revision && !this.dirty()) this.selected.set(fresh);
+      // List rows carry no step log; the selected record is reloaded in full.
+      if (fresh && fresh.revision !== selected.revision && !this.dirty()) this.refreshRecord(fresh.id);
       for (const record of records) if (!processing(record)) this.dropProgress(record.id);
     }, () => undefined).finally(() => {
       if (this.listPoll === controller) this.listPoll = null;
@@ -289,6 +311,12 @@ export class ExamImportComponent {
       this.accept(await loadImport(record.id, signal));
       this.selectedQuestionId.set('');
     });
+  }
+
+  /** Selects a question from the summary and moves focus to its review form. */
+  protected showQuestion(id: string): void {
+    this.selectedQuestionId.set(id);
+    this.document.getElementById('question-review')?.focus();
   }
 
   protected async refreshSelected(): Promise<void> {
@@ -413,6 +441,29 @@ export class ExamImportComponent {
     this.draftQuestions.update((questions) => questions.map((question) => ({
       ...question, needsReview: true, topicIds: question.topicIds.filter((id) => allowed.has(id)),
     })));
+  }
+
+  protected askApproveAll(): void {
+    this.approveAllPending.set(true);
+  }
+
+  protected cancelApproveAll(): void {
+    this.approveAllPending.set(false);
+  }
+
+  /** Confirms every valid question with its proposed values and saves with the current revision (409 on a stale one). */
+  protected async approveAll(): Promise<void> {
+    const selected = this.selected();
+    this.approveAllPending.set(false);
+    if (!selected || selected.state !== 'review' || !this.validTopics(this.draftTopics())) return;
+    const { questions, approved } = approveQuestions(this.draftQuestions(), this.draftTopics());
+    const skipped = questions.filter((question) => question.needsReview).length;
+    await this.mutate('draft', { revision: selected.revision, topics: this.draftTopics(), questions });
+    if (!this.error()) {
+      this.notice.set(skipped
+        ? `${approved} vragen goedgekeurd. ${skipped} ${skipped === 1 ? 'vraag heeft' : 'vragen hebben'} nog aandacht nodig.`
+        : `Alle ${approved} vragen zijn goedgekeurd en opgeslagen. Je kunt nu publiceren.`);
+    }
   }
 
   protected async saveDraft(): Promise<void> {

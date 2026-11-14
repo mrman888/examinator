@@ -1,0 +1,12 @@
+.summary { border: 1px solid var(--line); border-radius: 6px; padding: 4px 14px 10px; margin: 12px 0; }
+h3 { font-size: 15px; }
+p { font-size: 13px; line-height: 1.6; margin: 4px 0; }
+.hint, .none { color: #5b665e; }
+.topics { list-style: none; margin: 8px 0; padding: 0; font-size: 13px; }
+.topics li { margin: 6px 0; line-height: 2; }
+.numbers { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; }
+.number { min-width: 28px; padding: 3px 7px; border: 1px solid var(--green); border-radius: 5px; background: var(--green-pale); color: var(--green-dark); cursor: pointer; font: inherit; font-size: 12px; }
+.number:hover { background: var(--green); color: white; }
+details { padding: 6px 0; }
+summary { cursor: pointer; font-size: 13px; }
+:is(button, summary):focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }

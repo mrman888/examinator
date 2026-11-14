@@ -3,6 +3,8 @@ import type { ImportProgressEvent } from '../services/exam-import-client';
 import type { StreamConnection } from '../services/import-progress-stream';
 import { clockTime, connectionText, modelCallText, percent, phaseIndex, phaseLabel, progressSteps,
   stepText } from './import-progress-logic';
+import { formatDuration, isRunning, processingTime } from './import-timing';
+import { liveClock } from './live-clock';
 
 /** Live processing progress: a full stepper in the detail view, or a compact line in a list row. */
 @Component({
@@ -46,4 +48,12 @@ export class ImportProgressComponent {
     return clockTime(progress?.heartbeatAt ?? progress?.updatedAt ?? null);
   });
   protected readonly connectionText = computed(() => connectionText(this.connection()));
+  /** The list row ticks its elapsed processing time; the detail view shows it in the step log instead. */
+  private readonly ticking = computed(() => this.compact() && isRunning(this.progress()?.timing));
+  private readonly now = liveClock(this.ticking);
+  protected readonly elapsed = computed(() => {
+    const timing = this.progress()?.timing;
+    const ms = timing ? processingTime(timing, this.now()) : null;
+    return ms === null ? null : formatDuration(ms);
+  });
 }

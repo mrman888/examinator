@@ -25,6 +25,8 @@ public sealed class ImportStorage : IImportPersistence
     private readonly TableClient? jobs;
     private readonly TableClient? catalog;
 
+    /// <summary>The clock for <see cref="ImportRecord.UpdatedAt"/>; replaceable in tests.</summary>
+    internal TimeProvider Time { get; init; } = TimeProvider.System;
     public QueueClient Queue => queue;
     public QueueClient Poison => poison ?? throw new InvalidOperationException("The poison queue is not configured.");
     public BlobClient Lock(string id) => records.GetBlobClient($"locks/{id}");
@@ -68,7 +70,11 @@ public sealed class ImportStorage : IImportPersistence
             var response = await blob.DownloadContentAsync(cancellationToken);
             var record = JsonSerializer.Deserialize<ImportRecord>(response.Value.Content.ToMemory().Span, Json)
                 ?? throw new InvalidDataException("Import record was empty.");
-            return record with { Revision = response.Value.Details.ETag.ToString() };
+            return record with
+            {
+                Revision = response.Value.Details.ETag.ToString(),
+                UpdatedAt = record.UpdatedAt ?? response.Value.Details.LastModified
+            };
         }
         catch (RequestFailedException exception) when (exception.Status == 404)
         {
@@ -86,6 +92,8 @@ public sealed class ImportStorage : IImportPersistence
         var conditions = revision is null
             ? new BlobRequestConditions { IfNoneMatch = ETag.All }
             : new BlobRequestConditions { IfMatch = new ETag(revision), LeaseId = leaseId };
+        // UpdatedAt is set on every write; Timing is response-only and never stored.
+        record = record with { UpdatedAt = Time.GetUtcNow(), Timing = null };
         var payload = BinaryData.FromObjectAsJson(record with { Revision = "" }, Json);
         var response = await RecordBlob(record.Id).UploadAsync(payload,
             new BlobUploadOptions
@@ -174,7 +182,9 @@ public sealed class ImportStorage : IImportPersistence
     public async Task<Versioned<ImportRecord>?> ReadIfChangedAsync(string id, string? ifNoneMatch, CancellationToken cancellationToken)
     {
         var result = await ReadVersionedAsync<ImportRecord>(RecordBlob(id), ifNoneMatch, cancellationToken);
-        return result?.Value is { } record ? result with { Value = record with { Revision = result.ETag! } } : result;
+        return result?.Value is { } record
+            ? result with { Value = record with { Revision = result.ETag!, UpdatedAt = record.UpdatedAt ?? result.LastModified } }
+            : result;
     }
 
     /// <summary>Import ids whose job index row is in a processing state (queued, extracting, aligning, tagging).</summary>
@@ -340,7 +350,7 @@ public sealed class ImportStorage : IImportPersistence
         var snapshot = results!.GetBlobClient($"{record.Id}/manifest.json");
         try
         {
-            await snapshot.UploadAsync(BinaryData.FromObjectAsJson(record with { State = "published" }, Json),
+            await snapshot.UploadAsync(BinaryData.FromObjectAsJson(record with { State = "published", Timing = null }, Json),
                 new BlobUploadOptions
                 {
                     Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All },

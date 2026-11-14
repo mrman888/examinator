@@ -83,11 +83,23 @@ reprocessed imports share ids. When a document survives, the document row and
 the hash row are repointed to a surviving import. A worker that still receives a
 deleted id skips it and drops the message.
 
+### Review summary
+
+Once an import reaches `review` (and for published imports) the detail view shows
+a "Samenvatting", computed in the browser from the record: per topic, in the
+import's topic order, the number of questions with links to them (topics without
+questions read "Geen vragen gevonden"), the questions that match none of the
+topics, and the total of distinct questions with a topic. A question with several
+topics counts under each of them. The tagger has no separate "not relevant"
+outcome: a question with no (known) `topicIds` is not relevant. The summary
+follows unsaved topic edits in the review. Logic: `import-summary-logic.ts`.
+
 ### Live progress
 
 The leased worker writes `exam-imports/progress/{id}.json` (`ImportProgress`:
 attempt, monotonic sequence, phase, step/total/unit, model calls and budget,
-Dutch message, `updatedAt`, `heartbeatAt`). Phases are `starting`, `extracting`,
+Dutch message, `updatedAt`, `heartbeatAt`, plus the step log described below).
+Phases are `starting`, `extracting`,
 `definitions`, `rendering`, `inventory`, `aligning`, `tagging`, `throttled` (a
 Foundry HTTP 429 wait) and `finishing`. Phase changes are written immediately,
 steps within a phase at most once per 2 seconds (flushed on the next phase and at
@@ -106,7 +118,7 @@ the job index every 5 s. Events:
 
 | Event | Payload |
 | --- | --- |
-| `progress` | `{ importId, state, revision, phase, step, total, unit, modelCalls, modelCallBudget, message, updatedAt, heartbeatAt, serverTime, stale }` |
+| `progress` | `{ importId, state, revision, phase, step, total, unit, modelCalls, modelCallBudget, message, updatedAt, heartbeatAt, serverTime, stale, timing }`; `timing` holds only the current run (see below) |
 | `settled` | `{ importId, state, revision }` once an import leaves the processing states (`state` is `deleted` when it disappeared) |
 | `ping` | `{ serverTime }` every 15 s |
 
@@ -131,10 +143,75 @@ event, the dialog falls back to reloading the list every 5 seconds and offers
 a little while the dialog shows processing imports. Locally, `ng serve` proxies
 the stream like any other `/api` call.
 
+### Step log and processing time
+
+The progress blob also keeps a step log, so the processing steps can be reviewed
+after an import has finished:
+
+- `attemptStartedAt`, `completedAt` and `outcome` describe the current run;
+  `run` numbers the runs of the import (1, 2, ...), also across a retry that
+  resets the record's `processingAttempts`.
+- `phases` is the current run's step list: `{ phase, startedAt, endedAt,
+  message, step, total, modelCalls, outcome, error }`. Every phase change closes
+  the open entry (`outcome` `ok`) and opens the next one; the entry keeps the
+  latest message and step/total of that step (for example "1 vraag gevonden" or
+  "32 van 32 antwoorden gekoppeld") and the model calls started in it. A Foundry
+  rate-limit wait is a step of its own (`phase`/`outcome` `throttled`);
+  afterwards the interrupted phase opens a new entry. At most 100 entries per run.
+- The worker completes a run when it reaches `awaitingDefinitions`, `review` or
+  `failed` (and on cancellation): `completedAt` is set and the open step closes as
+  `ok`, `failed` (with the short Dutch error, at most 300 characters) or
+  `cancelled`.
+- When a new run starts (the resume after `awaitingDefinitions`, an automatic
+  re-dispatch, or a retry after `failed`), the stored run moves into
+  `earlierRuns` (`{ number, attempt, startedAt, endedAt, outcome, phases }`). A
+  run that never completed because the worker stopped ends at its last heartbeat
+  as `interrupted`. The last 20 earlier runs are kept; when older runs are
+  dropped, or the earlier progress predates the step log, `earlierRunsUnknown`
+  is set.
+
+All step-log fields are optional, so progress blobs from before the step log
+still deserialize; such imports have no `timing` and the UI shows "onbekend"
+and "Geen stapgeschiedenis beschikbaar voor deze import".
+
+The Api derives `timing` from the progress blob: `{ processingStartedAt,
+completedAt, outcome, processingMilliseconds, earlierProcessingMilliseconds,
+earlierRunsUnknown, runs }`. `processingMilliseconds` sums the run durations, so
+time between runs (waiting on the user at `awaitingDefinitions`, a failed import
+waiting for a retry, the queue) is excluded; it is null until the latest run has
+completed or when earlier runs are unknown. `earlierProcessingMilliseconds` lets
+the browser add the running run for a live total. `GET /api/imports/{id}` and
+the action responses carry all runs; `GET /api/imports` carries the summary
+without runs (one extra progress read per listed import, eight in parallel);
+the SSE `progress` event carries only the current run, which the browser merges
+into the record's runs by run number. An unreadable progress blob leaves
+`timing` null and never fails the request.
+
+Every import record also has `updatedAt`, set by `ImportStorage` on every record
+write; records written before it existed report the blob's last-modified time.
+`timing` is response-only and never stored in the record.
+
+The detail view shows "Verwerkingsstappen" for every import in every state: per
+run a heading "Poging 2 · 14-11-2026 15:02 · 6 min 12 s · Geslaagd" and a table
+with step, start time, duration, details, model calls and result (a failed step
+is highlighted with its error), newest run expanded and earlier runs collapsed.
+It shows "Totale verwerkingstijd" and, when it differs, "Doorlooptijd sinds
+upload" (upload until `completedAt`). While processing, the running step and
+the total tick every second; the timer stops when the import settles, on a
+hidden tab and on destroy, and nothing is announced per second. List rows show
+"Bijgewerkt: 14-11-2026 15:02" and "Verwerkt in 6 min 12 s" (processing rows
+show the elapsed time next to their live progress). Logic: `import-timing.ts`.
+
+### Review and publication
+
 Optional chapter text/screenshot produces proposed definitions and pauses at
 `awaitingDefinitions`. Explicit approval resumes tagging. Every extracted
-question then requires human confirmation in `review`, including its answer
-and page links. Saving a draft is not publication. Publishing commits an
+question is confirmed in `review` (`needsReview` false), including its answer
+and page links. "Alles goedkeuren" confirms every unconfirmed question with its
+proposed values in one revision-checked draft save (stale revision: 409); questions
+without answer pages or with invalid page ranges or topics stay unconfirmed and are
+listed. Single questions can still be (un)confirmed. Saving a draft is not publication,
+and publishing remains a separate explicit action. Publishing commits an
 immutable application-level manifest and catalog pointer, becoming visible only after the conditional
 published record commits; only published
 imports enter the trainer. The same sitting cannot silently replace a previous

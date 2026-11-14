@@ -211,8 +211,9 @@ public sealed class ImportProcessorTests
         var tagging = store.ProgressWrites.First(p => p.Phase == "tagging");
         Assert.Equal((1, 1, "vraag", "Vraag 1 van 1: onderwerpen toekennen"),
             (tagging.Step!.Value, tagging.Total!.Value, tagging.Unit, tagging.Message));
-        Assert.Equal(3, tagging.ModelCalls);
+        Assert.Equal(2, tagging.ModelCalls);
         var final = store.Progress(record.Id)!;
+        Assert.Equal([0, 0, 0, 2, 0, 1, 0], final.Phases!.Select(p => p.ModelCalls));
         Assert.Equal("finishing", final.Phase);
         Assert.Equal((1, 3, 64), (final.Attempt, final.ModelCalls, final.ModelCallBudget));
         Assert.All(store.ProgressWrites, p => Assert.Equal(record.Id, p.ImportId));
@@ -253,6 +254,75 @@ public sealed class ImportProcessorTests
         var latest = store.Progress(record.Id)!;
         Assert.Equal("inventory", latest.Phase);
         Assert.Equal(2, latest.ModelCalls);
+    }
+
+    [Fact]
+    public async Task TheRecordKeepsTheStepLogOfEveryRunAcrossTheDefinitionsResume()
+    {
+        var store = new MemoryImportStore();
+        var service = Service(store);
+        var record = await service.CreateAsync(Form("Leerdoelen celstructuur"), default);
+        await Processor(store, new Model(), progress: Reporter(store)).ProcessAsync(record.Id, default);
+        record = await service.GetAsync(record.Id, default);
+        Assert.Equal("awaitingDefinitions", record.Timing!.Outcome);
+        Assert.NotNull(record.Timing.ProcessingMilliseconds);
+        record = await service.UpdateAsync(record.Id, "confirm-definitions", new DefinitionsUpdate(record.Revision, [Topic]), default);
+        await Processor(store, new Model(), progress: Reporter(store)).ProcessAsync(record.Id, default);
+
+        var detail = await service.GetAsync(record.Id, default);
+        Assert.Equal("review", detail.State);
+        Assert.NotNull(detail.UpdatedAt);
+        var timing = detail.Timing!;
+        Assert.Equal([(1, "awaitingDefinitions"), (2, "review")], timing.Runs.Select(r => (r.Number, r.Outcome!)));
+        Assert.Equal(["starting", "extracting", "definitions"], timing.Runs[0].Phases.Select(p => p.Phase));
+        Assert.Equal(1, timing.Runs[0].Phases[2].ModelCalls);
+        var steps = timing.Runs[1].Phases;
+        Assert.Equal(["starting", "rendering", "inventory", "aligning", "tagging", "finishing"], steps.Select(p => p.Phase));
+        Assert.All(steps, step => Assert.Equal("ok", step.Outcome));
+        Assert.Equal("1 vraag gevonden", steps.Single(p => p.Phase == "inventory").Message);
+        Assert.Equal("1 van 1 antwoorden gekoppeld", steps.Single(p => p.Phase == "aligning").Message);
+        var tagging = steps.Single(p => p.Phase == "tagging");
+        Assert.Equal((1, 1, 1), (tagging.Step!.Value, tagging.Total!.Value, tagging.ModelCalls));
+        Assert.Equal(timing.Runs[0].StartedAt, timing.ProcessingStartedAt);
+
+        var row = (await service.ListAsync(default)).Single();
+        Assert.Empty(row.Timing!.Runs);
+        Assert.Equal(timing.ProcessingMilliseconds, row.Timing.ProcessingMilliseconds);
+        Assert.Equal(detail.UpdatedAt, row.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task AFailedRunAndItsRetryAreBothInTheStepLog()
+    {
+        var store = new MemoryImportStore();
+        var service = Service(store);
+        var record = await service.CreateAsync(Form(), default);
+        var broken = new Model { BeforeClassification = () => throw new InvalidDataException("Synthetische modelfout.") };
+        await Processor(store, broken, progress: Reporter(store)).ProcessAsync(record.Id, default);
+        record = await service.GetAsync(record.Id, default);
+        Assert.Equal("failed", record.State);
+        Assert.Equal("Synthetische modelfout.", record.Error);
+        var failed = Assert.Single(record.Timing!.Runs);
+        Assert.Equal("failed", failed.Outcome);
+        Assert.Equal(("tagging", "failed"), (failed.Phases[^1].Phase, failed.Phases[^1].Outcome));
+        Assert.Equal(record.Error, failed.Phases[^1].Error);
+        Assert.All(failed.Phases[..^1], step => Assert.Equal("ok", step.Outcome));
+
+        record = await service.UpdateAsync(record.Id, "retry", new RevisionUpdate(record.Revision), default);
+        await Processor(store, new Model(), progress: Reporter(store)).ProcessAsync(record.Id, default);
+        var timing = (await service.GetAsync(record.Id, default)).Timing!;
+        Assert.Equal([(1, 1, "failed"), (2, 1, "review")], timing.Runs.Select(r => (r.Number, r.Attempt, r.Outcome!)));
+    }
+
+    [Fact]
+    public async Task ImportsWithoutProgressHaveNoTimingButDoHaveUpdatedAt()
+    {
+        var store = new MemoryImportStore();
+        var record = await Service(store).CreateAsync(Form(), default);
+        var row = (await Service(store).ListAsync(default)).Single();
+        Assert.Null(row.Timing);
+        Assert.NotNull(row.UpdatedAt);
+        Assert.Null((await Service(store).GetAsync(record.Id, default)).Timing);
     }
 
     internal static IFormCollection Form(string context = "", bool unknownSitting = false)
@@ -379,7 +449,7 @@ internal sealed class MemoryImportStore : IImportPersistence
         lock (sync)
         {
             if (records.TryGetValue(record.Id, out var current) && current.Revision != revision) throw new RequestFailedException(412, "Stale synthetic revision.");
-            Record = record with { Revision = $"\"v{++version}\"" };
+            Record = record with { Revision = $"\"v{++version}\"", UpdatedAt = Clock(), Timing = null };
             modified[record.Id] = Clock();
             return Task.FromResult(Record!);
         }
