@@ -68,9 +68,22 @@ foreach ($failBuild in @(0, 1, 2)) {
     }
 }
 
+$state.FailBuild = 0
+foreach ($case in @(
+    @{ Images = @('Web'); Dockerfile = 'server/Web/Dockerfile'; Built = 'WebImage'; Kept = 'ApiImage' },
+    @{ Images = @('Api'); Dockerfile = 'server/Api/Dockerfile'; Built = 'ApiImage'; Kept = 'WebImage' }
+)) {
+    $state.Calls.Clear()
+    $result = & $buildScript @parameters -Images $case.Images -Build
+    Assert-True ($state.Calls.Count -eq 1) "Only the $($case.Images) image must build."
+    Assert-True ($state.Calls[0] -contains $case.Dockerfile) "The $($case.Images) build used the wrong Dockerfile."
+    Assert-True (-not [string]::IsNullOrWhiteSpace($result.($case.Built))) "The built $($case.Images) image must be returned."
+    Assert-True ($null -eq $result.($case.Kept)) 'An image that was not built must not be returned.'
+}
+
 $state.Calls.Clear()
 $null = & $buildScript @parameters
 Assert-True ($state.Calls.Count -eq 0) 'Preflight must not build images.'
 $null = & $buildScript @parameters -Build -WhatIf
 Assert-True ($state.Calls.Count -eq 0) 'WhatIf must not build images.'
-Write-Host 'Passed: successful builds, API/web failures, preflight, and WhatIf.'
+Write-Host 'Passed: successful builds, API/web failures, single-image builds, preflight, and WhatIf.'

@@ -1,4 +1,4 @@
-name: CI and manual deployment
+name: CI and deployment
 
 on:
   pull_request:
@@ -19,8 +19,30 @@ permissions:
 jobs:
   validate-ref:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      deploy: ${{ steps.merged-pr.outputs.deploy || steps.manual.outputs.deploy || 'false' }}
     steps:
+      - name: Require a merged pull request for automatic deployment
+        id: merged-pr
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          merged=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+            | jq --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | length')
+          if [ "$merged" -gt 0 ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::$SHA was pushed to main without a merged pull request, so it is not deployed automatically."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Require main for manual deployment
+        id: manual
         if: github.event_name == 'workflow_dispatch'
         env:
           REF: ${{ github.ref }}
@@ -34,10 +56,87 @@ jobs:
             echo "::error::image_tag contains characters that are not valid in an OCI image tag."
             exit 1
           fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      frontend: ${{ steps.detect.outputs.frontend }}
+      backend: ${{ steps.detect.outputs.backend }}
+      images: ${{ steps.detect.outputs.images }}
+      deploy: ${{ steps.detect.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect changed parts
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          everything() {
+            { echo "frontend=true"; echo "backend=true"; echo "images=Api,Web"; echo "deploy=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # Manual runs build and deploy everything.
+          [ "$EVENT" = "workflow_dispatch" ] && everything
+
+          base=""
+          if [ "$EVENT" = "pull_request" ]; then
+            base=$(git merge-base "$PR_BASE_SHA" "$HEAD_SHA")
+          else
+            # Compare against the last commit that deployed successfully, so changes from a
+            # failed deploy are still built next time. A manual image_tag redeploy skips the
+            # frontend job and does not count, because it may run an older image.
+            for run in $(gh api "repos/$REPO/actions/workflows/ci-cd.yml/runs?branch=main&status=completed&per_page=30" \
+                --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | "\(.id):\(.event):\(.head_sha)"'); do
+              IFS=: read -r id event sha <<< "$run"
+              jobs=$(gh api "repos/$REPO/actions/runs/$id/jobs" --jq '[.jobs[] | {(.name): .conclusion}] | add // {}') || continue
+              deployed=$(jq -r --arg event "$event" \
+                '.deploy == "success" and ($event != "workflow_dispatch" or .frontend != "skipped")' <<< "$jobs")
+              if [ "$deployed" = "true" ] && git merge-base --is-ancestor "$sha" "$HEAD_SHA" 2>/dev/null; then
+                base="$sha"
+                break
+              fi
+            done
+          fi
+          if [ -z "$base" ]; then
+            echo "::notice::No base commit to compare with, so everything is built."
+            everything
+          fi
+
+          files=$(git diff --name-only "$base" "$HEAD_SHA")
+          echo "Changed since $base:"
+          echo "${files:-(nothing)}"
+          has() { grep -qE "$1" <<< "$files"; }
+
+          frontend=false; backend=false; web=false; api=false; infra=false
+          if has '^(src/|Data/|package(-lock)?\.json$|angular\.json$|tsconfig[^/]*\.json$|\.nvmrc$)'; then frontend=true; web=true; fi
+          if has '^server/Web/'; then backend=true; web=true; fi
+          if has '^server/Api/'; then backend=true; api=true; fi
+          if has '^server/'; then backend=true; fi
+          if has '^\.dockerignore$'; then web=true; api=true; fi
+          if has '^\.github/workflows/ci-cd\.yml$'; then frontend=true; backend=true; infra=true; fi
+          if grep -E '^deployment/' <<< "$files" | grep -qvE '^deployment/(tests/|.*\.md$)'; then infra=true; fi
+
+          images=$( { [ "$api" = true ] && echo Api; [ "$web" = true ] && echo Web; } | paste -sd, - || true)
+          deploy=false
+          if [ "$web" = true ] || [ "$api" = true ] || [ "$infra" = true ]; then deploy=true; fi
+          { echo "frontend=$frontend"; echo "backend=$backend"; echo "images=$images"; echo "deploy=$deploy"; } >> "$GITHUB_OUTPUT"
+          echo "frontend tests=$frontend, backend tests=$backend, images to build=${images:-none}, deploy=$deploy"
 
   frontend:
-    if: inputs.image_tag == ''
-    needs: validate-ref
+    if: inputs.image_tag == '' && needs.changes.outputs.frontend == 'true'
+    needs: [validate-ref, changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,8 +149,8 @@ jobs:
       - run: npm test
 
   backend:
-    if: inputs.image_tag == ''
-    needs: validate-ref
+    if: inputs.image_tag == '' && needs.changes.outputs.backend == 'true'
+    needs: [validate-ref, changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,12 +162,15 @@ jobs:
   deploy:
     if: >-
       always() &&
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
       needs.validate-ref.result == 'success' &&
+      needs.validate-ref.outputs.deploy == 'true' &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.deploy == 'true' &&
       (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') &&
       (needs.backend.result == 'success' || needs.backend.result == 'skipped')
-    needs: [validate-ref, frontend, backend]
+    needs: [validate-ref, changes, frontend, backend]
     runs-on: windows-latest
     environment: development
     concurrency:
@@ -116,9 +218,11 @@ jobs:
           ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
           IMPORT_DEPLOYMENT_NAME: ${{ vars.IMPORT_DEPLOYMENT_NAME }}
           EXISTING_IMAGE_TAG: ${{ inputs.image_tag }}
+          BUILD_IMAGES: ${{ needs.changes.outputs.images }}
         run: |
           $ErrorActionPreference = 'Stop'
           $allowedUsers = @($env:ALLOWED_USER_IDS.Split(',') | ForEach-Object { [guid]$_.Trim() })
+          $buildImages = @("$env:BUILD_IMAGES".Split(',', [StringSplitOptions]::RemoveEmptyEntries))
           $skipBuild = -not [string]::IsNullOrWhiteSpace($env:EXISTING_IMAGE_TAG)
           if ($skipBuild) {
             $imageTag = $env:EXISTING_IMAGE_TAG.Trim()
@@ -135,6 +239,7 @@ jobs:
             -AllowedUserIds $allowedUsers `
             -ImageTag $imageTag `
             -SkipBuild:$skipBuild `
+            -Images $buildImages `
             -EnableImports:([bool](-not [string]::IsNullOrWhiteSpace($env:IMPORT_DEPLOYMENT_NAME))) `
             -ImportDeploymentName $env:IMPORT_DEPLOYMENT_NAME -Deploy -Confirm:$false
       - name: Check public web health

@@ -19,6 +19,8 @@ param(
     [ValidateRange(1, 1000)]
     [int] $ImportDeploymentCapacity = 150,
     [switch] $SkipBuild,
+    [ValidateSet('Api', 'Web')]
+    [string[]] $Images = @('Api', 'Web'),
     [switch] $ProvisionFoundry,
     [switch] $Deploy
 )
@@ -54,6 +56,21 @@ function Resolve-AllowedUserIds {
         throw 'No signed-in user was resolved. Supply at least one approved user object ID when using a non-user identity.'
     }
     return @($resolved | Select-Object -Unique | ForEach-Object { [guid]$_ })
+}
+
+function Get-DeployedImage {
+    param(
+        [Parameter(Mandatory = $true)][string] $AppName,
+        [Parameter(Mandatory = $true)][string] $ContainerName
+    )
+
+    $image = & az containerapp show --name $AppName --resource-group $ResourceGroupName `
+        --subscription $SubscriptionId.ToString() --query "properties.template.containers[?name=='$ContainerName'].image | [0]" `
+        --output tsv --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$image)) {
+        throw "$AppName has no deployed image to keep. Include it in -Images to build it."
+    }
+    return ([string]$image).Trim()
 }
 
 if ([string]::IsNullOrWhiteSpace($RegistryName)) {
@@ -102,6 +119,10 @@ if ($ProvisionFoundry) {
 Write-Host "Target: $subscription / $ResourceGroupName / $Location / tenant $TenantId"
 Write-Host "Registry: $RegistryName; ACA environment: $EnvironmentName; image tag: $ImageTag"
 Write-Host "Approved user object IDs: $($AllowedUserIds.Count)"
+if (-not $SkipBuild) {
+    $kept = @('Api', 'Web') | Where-Object { $Images -notcontains $_ }
+    Write-Host "Images to build: $(if ($Images.Count -gt 0) { $Images -join ', ' } else { 'none' }); images kept as deployed: $(if ($kept) { $kept -join ', ' } else { 'none' })"
+}
 if ($ProvisionFoundry) {
     Write-Host "Foundry will be provisioned explicitly as $FoundryAccountName / $FoundryDeploymentName."
 }
@@ -163,13 +184,17 @@ if ($EnableImports) {
 }
 
 if (-not $SkipBuild) {
-    $images = & $buildScript -SubscriptionId $SubscriptionId -ResourceGroupName $ResourceGroupName `
-        -RegistryName $RegistryName -ImageTag $ImageTag -Build
-    if (-not $images.ApiImage -or -not $images.WebImage) {
-        throw 'Image build did not return both image references.'
+    $built = [pscustomobject]@{ ApiImage = $null; WebImage = $null }
+    if ($Images.Count -gt 0) {
+        $built = & $buildScript -SubscriptionId $SubscriptionId -ResourceGroupName $ResourceGroupName `
+            -RegistryName $RegistryName -ImageTag $ImageTag -Images $Images -Build
     }
-    $apiImage = [string]$images.ApiImage
-    $webImage = [string]$images.WebImage
+    if (($Images -contains 'Api' -and -not $built.ApiImage) -or ($Images -contains 'Web' -and -not $built.WebImage)) {
+        throw 'Image build did not return the requested image references.'
+    }
+    # An image that was not rebuilt keeps the one the container app runs now.
+    $apiImage = if ($built.ApiImage) { [string]$built.ApiImage } else { Get-DeployedImage -AppName 'examinator-api' -ContainerName 'api' }
+    $webImage = if ($built.WebImage) { [string]$built.WebImage } else { Get-DeployedImage -AppName 'examinator-web' -ContainerName 'web' }
 }
 else {
     $registry = Invoke-AzJson -Arguments @(

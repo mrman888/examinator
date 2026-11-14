@@ -31,7 +31,7 @@ Request flow: browser → Web (EasyAuth, allowlist, CSRF) → Api (JWT) → Foun
 - Tests must not call Foundry, so they don't spend tokens.
 
 ## Deployment
-- CI is `.github/workflows/ci-cd.yml`. It builds and tests on PRs and pushes. Deploy runs only on a manual run from `main`, via `deployment/deploy.ps1`.
+- CI is `.github/workflows/ci-cd.yml`. It builds and tests on PRs and pushes. `main` only accepts PRs. Merging one deploys via `deployment/deploy.ps1`, and only the images whose files changed are rebuilt (`-Images Api,Web`). A manual run from `main` deploys everything. The mapping from changed files to images is in `deployment/README.md`.
 - Scripts target Windows PowerShell 5.1.
 - Run ACR builds with `--no-logs --only-show-errors` and never with `--no-wait`. Streaming the logs crashes Azure CLI on Windows because of Angular's Unicode output. Read the logs afterwards with `az acr task logs`.
 - Both Docker images build from the repo root, run as non-root on port 8080, and need `/healthz`.
