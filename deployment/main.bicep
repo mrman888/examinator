@@ -16,6 +16,8 @@ param apiIdentityName string = 'examinator-api'
 param webIdentityName string = 'examinator-web'
 param enableImports bool = false
 param keyVaultWriterObjectId string = ''
+param logAnalyticsName string = 'examinator-logs'
+param appInsightsName string = 'examinator-insights'
 
 var storageName = 'exam${uniqueString(resourceGroup().id)}'
 var vaultName = 'examkv-${uniqueString(resourceGroup().id)}'
@@ -166,12 +168,43 @@ resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
   }
 }
 
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: { name: 'PerGB2018' }
+    retentionInDays: 30
+    workspaceCapping: { dailyQuotaGb: 1 }
+  }
+  tags: {
+    application: 'examinator'
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    IngestionMode: 'LogAnalytics'
+  }
+  tags: {
+    application: 'examinator'
+  }
+}
+
 resource environment 'Microsoft.App/managedEnvironments@2023-05-01' = {
   name: environmentName
   location: location
   properties: {
     appLogsConfiguration: {
-      destination: ''
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
+      }
     }
     workloadProfiles: [
       {
@@ -241,6 +274,8 @@ output apiIdentityPrincipalId string = apiIdentity.properties.principalId
 output webIdentityId string = webIdentity.id
 output webIdentityClientId string = webIdentity.properties.clientId
 output webIdentityPrincipalId string = webIdentity.properties.principalId
+output logAnalyticsWorkspaceId string = logAnalytics.properties.customerId
+output appInsightsConnectionString string = appInsights.properties.ConnectionString
 output keyVaultName string = vault.name
 output keyVaultUri string = vault.properties.vaultUri
 output storageName string = enableImports ? storage!.name : ''

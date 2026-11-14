@@ -235,7 +235,14 @@ if (-not $PSCmdlet.ShouldProcess("$subscription/$ResourceGroupName", 'Deploy int
     return
 }
 
-$apiEnvironment = @(
+$telemetryEnvironment = @()
+$appInsightsOutput = $identityOutputs.PSObject.Properties['appInsightsConnectionString']
+$appInsightsConnectionString = if ($appInsightsOutput) { [string]$appInsightsOutput.Value.value } else { '' }
+if (-not [string]::IsNullOrWhiteSpace($appInsightsConnectionString)) {
+    $telemetryEnvironment += "APPLICATIONINSIGHTS_CONNECTION_STRING=$appInsightsConnectionString"
+}
+
+$apiEnvironment = $telemetryEnvironment + @(
     "Azure__TenantId=$TenantId",
     "Azure__ApiClientId=$ApiAppId",
     "Azure__GatewayPrincipalId=$($identityOutputs.webIdentityPrincipalId.value)",
@@ -317,7 +324,7 @@ if ([string]::IsNullOrWhiteSpace($apiFqdn)) {
     throw 'Internal API ingress did not return an FQDN.'
 }
 
-$webEnvironment = @(
+$webEnvironment = $telemetryEnvironment + @(
     "Azure__TenantId=$TenantId",
     "Azure__ApiClientId=$ApiAppId",
     "Azure__ManagedIdentityClientId=$webIdentityClientId",
@@ -489,7 +496,7 @@ if ($webFqdn -ne $expectedWebFqdn) {
     $null = Invoke-AzJson -Arguments @(
         'ad', 'app', 'update', '--id', $WebAppId, '--web-redirect-uris', $callback
     )
-    $webEnvironment = @(
+    $webEnvironment = $telemetryEnvironment + @(
         "Azure__TenantId=$TenantId",
         "Azure__ApiClientId=$ApiAppId",
         "Azure__ManagedIdentityClientId=$webIdentityClientId",

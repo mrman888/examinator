@@ -33,9 +33,21 @@ public static class ImportRegistration
             ? new AzureCliCredential()
             : new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(
                 builder.Configuration["Azure:ManagedIdentityClientId"] ?? throw new InvalidOperationException("Configure the worker identity."))));
+        builder.Services.AddTelemetry(builder.Configuration);
         builder.Services.AddImports(builder.Configuration);
         using var host = builder.Build();
         await host.StartAsync();
+        try { await RunWorkerOnceAsync(host, args); }
+        catch (Exception exception)
+        {
+            host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ImportWorker")
+                .LogCritical(exception, "The import worker stopped with an unhandled {ErrorType}.", exception.GetType().Name);
+            throw;
+        }
+    }
+
+    private static async Task RunWorkerOnceAsync(IHost host, string[] args)
+    {
         var storage = host.Services.GetRequiredService<ImportStorage>();
         var ct = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
         if (args.Contains("--reconcile"))

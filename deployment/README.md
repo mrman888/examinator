@@ -229,8 +229,13 @@ Foundry processing, import approval or EasyAuth credential validity.
   Container Apps authenticate to the registry using those identities, never
   registry passwords. The registry endpoint remains network-public so the
   Consumption environment can pull images; no private endpoint/VNet is created.
-- One Container Apps **Consumption** environment; no persistent Log Analytics
-  workspace or diagnostic setting is provisioned. The API has internal-only
+- One Log Analytics workspace (`examinator-logs`, 30-day retention, 1 GB/day
+  cap) and a workspace-based Application Insights resource
+  (`examinator-insights`). The Container Apps environment sends console and
+  system logs to the workspace. The API, web app and both import jobs receive
+  `APPLICATIONINSIGHTS_CONNECTION_STRING` and export OpenTelemetry logs, traces
+  and metrics through Azure Monitor; without that variable no telemetry is sent.
+- One Container Apps **Consumption** environment. The API has internal-only
   ingress. The web app has external HTTPS ingress and Container Apps built-in
   Entra authentication (EasyAuth). On first deployment, the web app remains
   internal until its secret, redirect URI, and EasyAuth configuration are

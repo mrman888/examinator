@@ -60,7 +60,8 @@ if ($exists) {
 
 Write-Host "Target: $subscription / $ResourceGroupName / $Location"
 Write-Host "Base infrastructure: ACR Basic ($RegistryName), Consumption ACA ($EnvironmentName), two user-assigned identities."
-Write-Host 'ACR admin credentials and persistent log analytics are disabled.'
+Write-Host 'Monitoring: Log Analytics workspace (30-day retention, 1 GB/day cap) with workspace-based Application Insights.'
+Write-Host 'ACR admin credentials are disabled.'
 if (-not $Deploy) {
     Write-Host 'Preflight complete; no Azure resources changed. Rerun with -Deploy to provision.'
     return

@@ -80,7 +80,8 @@ $arguments = @(
     "queueEndpoint=$($baseOutputs.queueEndpoint.value)",
     "tableEndpoint=$($baseOutputs.tableEndpoint.value)",
     "foundryEndpoint=https://$($env:FOUNDRY_ACCOUNT_NAME).cognitiveservices.azure.com/",
-    "importDeployment=$($env:FOUNDRY_IMPORT_DEPLOYMENT_NAME)"
+    "importDeployment=$($env:FOUNDRY_IMPORT_DEPLOYMENT_NAME)",
+    "appInsightsConnectionString=$($baseOutputs.appInsightsConnectionString.value)"
 )
 & az @arguments --only-show-errors --output none
 if ($LASTEXITCODE -ne 0) {

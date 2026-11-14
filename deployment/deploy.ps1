@@ -198,7 +198,8 @@ if ($EnableImports) {
         "storageName=$($base.storageName.value)", "blobEndpoint=$($base.blobEndpoint.value)",
         "queueEndpoint=$($base.queueEndpoint.value)", "tableEndpoint=$($base.tableEndpoint.value)",
         "foundryEndpoint=https://$FoundryAccountName.cognitiveservices.azure.com/",
-        "importDeployment=$ImportDeploymentName"
+        "importDeployment=$ImportDeploymentName",
+        "appInsightsConnectionString=$($base.appInsightsConnectionString.value)"
     )
 }
 

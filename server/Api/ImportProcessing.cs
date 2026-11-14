@@ -203,7 +203,7 @@ public sealed class ImportProcessor(IImportPersistence storage, IImportModel mod
             System.Text.Json.JsonException or OperationCanceledException or InvalidOperationException or
             System.ComponentModel.Win32Exception or RequestFailedException)
         {
-            logger.LogError("Import {ImportId} failed with {ErrorType}.", id, exception.GetType().Name);
+            logger.LogError(exception, "Import {ImportId} failed with {ErrorType}.", id, exception.GetType().Name);
             var latest = await storage.ReadAsync(id, CancellationToken.None);
             if (latest is not null && latest.State is not ("cancelled" or "published" or "review"))
                 await storage.WriteAsync(latest with

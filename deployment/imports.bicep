@@ -12,8 +12,13 @@ param queueEndpoint string
 param tableEndpoint string
 param foundryEndpoint string
 param importDeployment string
+param appInsightsConnectionString string = ''
 
-var environment = [
+var telemetry = empty(appInsightsConnectionString) ? [] : [
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+]
+
+var environment = concat(telemetry, [
   { name: 'ASPNETCORE_ENVIRONMENT', value: 'Production' }
   { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
   { name: 'Azure__ManagedIdentityClientId', value: apiIdentityClientId }
@@ -24,7 +29,7 @@ var environment = [
   { name: 'Storage__TableEndpoint', value: tableEndpoint }
   { name: 'Foundry__Endpoint', value: foundryEndpoint }
   { name: 'Foundry__ImportDeployment', value: importDeployment }
-]
+])
 
 // Stable API keeps identity-authenticated scaling without the AVM module's preview API.
 resource jobs 'Microsoft.App/jobs@2025-07-01' = [for mode in ['worker', 'reconcile']: {

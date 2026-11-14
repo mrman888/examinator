@@ -71,6 +71,7 @@ module imports '../deployment/imports.bicep' = {
     tableEndpoint: base.outputs.tableEndpoint
     foundryEndpoint: 'https://${foundryAccountName}.cognitiveservices.azure.com/'
     importDeployment: foundryImportDeploymentName
+    appInsightsConnectionString: base.outputs.appInsightsConnectionString
   }
 }
 
