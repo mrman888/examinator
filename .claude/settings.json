@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Content *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Select-String *)",
+      "PowerShell(az acr task logs *)",
+      "PowerShell(az acr task list-runs *)",
+      "PowerShell(az acr repository list *)",
+      "PowerShell(az acr repository show-tags *)",
+      "PowerShell(az acr show *)",
+      "PowerShell(az containerapp show *)",
+      "PowerShell(az containerapp list *)",
+      "PowerShell(az containerapp logs show *)",
+      "PowerShell(az monitor app-insights query *)",
+      "Bash(az acr task logs *)",
+      "Bash(az acr repository show-tags *)",
+      "Bash(az containerapp show *)",
+      "Bash(az containerapp logs show *)",
+      "Bash(az monitor app-insights query *)",
+      "PowerShell(az role assignment *)",
+      "Bash(az role assignment *)",
+      "PowerShell(dotnet build *)",
+      "PowerShell(dotnet test *)",
+      "PowerShell(dotnet run *)",
+      "Bash(dotnet build *)",
+      "Bash(dotnet test *)",
+      "Bash(dotnet run *)",
+      "PowerShell(npm ci)",
+      "PowerShell(npm start)",
+      "PowerShell(npm run build)",
+      "PowerShell(npm test)",
+      "PowerShell(npm test *)",
+      "Bash(npm ci)",
+      "Bash(npm start)",
+      "Bash(npm run build)",
+      "Bash(npm test)",
+      "Bash(npm test *)"
+    ]
+  }
+}
