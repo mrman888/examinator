@@ -108,7 +108,8 @@ The `changes` job decides what to test, build and deploy from the changed files:
 | `src/`, `Data/`, `package*.json`, `angular.json`, `tsconfig*.json`, `.nvmrc` | frontend | web |
 | `server/Web/` | backend | web |
 | `server/Api/` | backend | api |
-| other `server/` files (such as `server/Tests/`) | backend | none |
+| `server/ServiceDefaults/` | backend | web and api |
+| other `server/` files (`server/Tests/`, `server/AppHost/`, `server/AppHost.Tests/`, `server/dev-proxy.mjs`) | backend | none |
 | `.dockerignore` | none | web and api |
 | `deployment/` (except `tests/` and Markdown) | none | none, but deploys |
 | `.github/workflows/ci-cd.yml` | frontend and backend | none, but deploys |

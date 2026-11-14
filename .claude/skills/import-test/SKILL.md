@@ -13,7 +13,7 @@ A real import calls Azure Foundry (vision model, up to 64 calls per import by de
 
 Mocked, free checks (no Foundry, no Azure): `dotnet test .\server\Tests\Tests.csproj --filter "FullyQualifiedName~Import"` plus `PdfExtractionTests` and `QuestionAlignmentTests`. They use fakes such as `IImportModel`/`IPdfRenderer` in `ImportProcessorTests`. Frontend: `npm test -- src\app\components\exam-import.component.spec.ts` and the `import-*.spec.ts` files. For a new behaviour, extend these first.
 
-Local runs must use the **dedicated test storage account**, never production storage or its catalog. The three `Storage__*Endpoint` values live in the git-ignored `scripts\local\settings.local.json` (template: `settings.example.json`); confirm with the user which account it points at if unsure, and never copy account names or hostnames into files you commit.
+Local runs must use the **dedicated test storage account**, never production storage or its catalog. The account name is the AppHost parameter `storage-account` in user secrets (`dotnet user-secrets list --project .\server\AppHost`), and the AppHost refuses production-style names; confirm with the user which account it points at if unsure, and never copy account names or hostnames into files you commit.
 
 ## Test documents
 
@@ -43,13 +43,13 @@ Request examples (needing a gateway JWT, never commit one): `server/Api/imports.
 
 ## Starting a local run
 
-The launcher is changing (`scripts\local\*.ps1` is being replaced by an Aspire AppHost on another branch). Do not assume either:
+`.\start.ps1` runs the Aspire AppHost (`server\AppHost`): Api, Web, Angular on 4200 and the dashboard. Details are in "Local run with the Aspire AppHost" in `server\README.md`.
 
-1. Check `Test-Path .\server\AppHost`.
-2. Read the "Local test" section of `server\README.md` and follow the commands it gives for this checkout. On a checkout with `scripts\local` the README describes `start.ps1` (`-Worker` adds the polling worker; frontend on 4200, Web 5181, Api 5182) and separate `api.ps1`, `web.ps1`, `frontend.ps1`, `worker.ps1` (`-Watch` to poll), `reconcile.ps1`.
-3. Whatever the launcher, imports need: `Import__Enabled=true`, the three `Storage__*Endpoint` values, `Foundry__ImportDeployment`, `az login` (data permissions on the test account and Foundry access), and `pdftoppm` (Poppler) on PATH for the worker.
+- Imports are on only when the AppHost setting `Examinator:Imports` is `true`. Then the user secrets must also hold `Parameters:storage-account` and `Parameters:foundry-import-deployment`, `pdftoppm` (Poppler) must be on PATH, and `az login` needs data permissions on the test account and Foundry access.
+- With imports on, the `import-worker` resource starts by itself and polls, so it processes anything already queued in the test storage and spends tokens. Use `.\start.ps1 -NoImports` when the task doesn't need a real import.
+- `import-reconcile` (restores lost dispatch) is started by hand from the dashboard.
 
-Where the worker fits: the Api only stores and enqueues. The worker is the same Api binary started with `--import-worker` (one dispatch then exit) and `--reconcile` (restores lost dispatch). With no worker running, an upload stays `queued` ("Wachten op de achtergrondtaak"). The watcher stops on failure and never retries; read the error in the import's "Verwerkingsstappen" and retry explicitly. Settings are read at startup, so restart the affected process after changing them. Stop services with Ctrl+C; do not kill unrelated processes on 4200/5181/5182.
+Where the worker fits: the Api only stores and enqueues. The worker is the same Api binary started with `--import-worker` (one dispatch then exit; the AppHost adds `--poll` to repeat it) and `--reconcile`. With no worker running, an upload stays `queued` ("Wachten op de achtergrondtaak"). The polling worker stops at the first failure and never retries; read the error in the import's "Verwerkingsstappen" and retry explicitly. Settings are read at startup, so restart the AppHost after changing them. Stop it with Ctrl+C; do not kill unrelated processes.
 
 ## Reporting
 

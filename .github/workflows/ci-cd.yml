@@ -123,6 +123,7 @@ jobs:
           if has '^(src/|Data/|package(-lock)?\.json$|angular\.json$|tsconfig[^/]*\.json$|\.nvmrc$)'; then frontend=true; web=true; fi
           if has '^server/Web/'; then backend=true; web=true; fi
           if has '^server/Api/'; then backend=true; api=true; fi
+          if has '^server/ServiceDefaults/'; then backend=true; web=true; api=true; fi
           if has '^server/'; then backend=true; fi
           if has '^\.dockerignore$'; then web=true; api=true; fi
           if has '^\.github/workflows/ci-cd\.yml$'; then frontend=true; backend=true; infra=true; fi
@@ -157,7 +158,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet test server/Tests/Tests.csproj --configuration Release
+      - run: dotnet build server/Examinator.slnx --configuration Release
+      - run: dotnet test server/Tests/Tests.csproj --configuration Release --no-build
+      - run: dotnet test server/AppHost.Tests/AppHost.Tests.csproj --configuration Release --no-build
 
   deploy:
     if: >-

@@ -10,8 +10,10 @@ RUN npm run build
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS gateway
 WORKDIR /source
 COPY server/Web/Web.csproj server/Web/
+COPY server/ServiceDefaults/ServiceDefaults.csproj server/ServiceDefaults/
 RUN dotnet restore server/Web/Web.csproj
 COPY server/Web/ server/Web/
+COPY server/ServiceDefaults/ server/ServiceDefaults/
 RUN dotnet publish server/Web/Web.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

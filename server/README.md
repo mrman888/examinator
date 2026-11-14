@@ -264,8 +264,8 @@ Runtime configuration:
 
 The same API image runs `dotnet Api.dll --import-worker` for one queue message
 and `dotnet Api.dll --reconcile` for recovery. Local worker development needs
-`DOTNET_ENVIRONMENT=Development`, the settings above, Azure CLI data permissions,
-and `pdftoppm` on PATH. Docker installs Poppler. Hosted workers use the API's
+the AppHost import settings below, Azure CLI data permissions, and `pdftoppm`
+on PATH. Docker installs Poppler. Hosted workers use the API's
 managed identity; the website has no storage data permissions.
 
 Storage consists of three non-public Blob containers (`exam-documents`,
@@ -294,107 +294,98 @@ This separate endpoint is a connection test only, not the import workflow.
 Each request is independent. Prompts are sent to Azure but
 are not deliberately persisted or logged by either application.
 
-## Local test without containers
+## Local run with the Aspire AppHost
 
-### Ready-to-run Windows scripts
+`server/AppHost` is a .NET Aspire AppHost for local development only. One
+command starts the Api, the Web gateway and the Angular dev server, and shows
+their logs, traces and metrics in the Aspire dashboard. It refuses to start
+outside the Development environment or in publish mode; Azure deployment stays
+with `deployment/deploy.ps1`.
 
-From the repository root, start the Api, Web gateway and Angular in separate
-PowerShell windows with one command:
+Requirements: .NET 10 SDK, Node 26 with `npm ci` done, and Azure CLI signed in
+(`az login`) as an identity with inference access on the Foundry account.
+Docker and the Aspire CLI are not needed. Trust the ASP.NET Core development
+certificate once with `dotnet dev-certs https --trust`: the dashboard and its
+telemetry endpoint use HTTPS, and without a trusted certificate the apps cannot
+send telemetry to it.
 
-```powershell
-.\scripts\local\start.ps1
-```
-
-The launcher checks ports and waits for readiness. Open `http://127.0.0.1:4200`.
-It uses loopback-only Development authentication; do not expose these processes
-to the internet. Dependencies must already be installed (`npm ci` on initial
-setup). No Angular production build is needed for the dev server.
-
-Individual commands are also available:
-
-```powershell
-.\scripts\local\api.ps1
-.\scripts\local\web.ps1
-.\scripts\local\frontend.ps1
-```
-
-For real import testing, first create the ignored configuration file:
+Settings are AppHost parameters kept in user secrets, outside the repository.
+Set them once:
 
 ```powershell
-Copy-Item .\scripts\local\settings.example.json .\scripts\local\settings.local.json
+dotnet user-secrets set 'Parameters:foundry-endpoint' 'https://<foundry-account>.cognitiveservices.azure.com/' --project .\server\AppHost
+dotnet user-secrets set 'Parameters:foundry-deployment' '<prompt-deployment>' --project .\server\AppHost
 ```
 
-Replace the placeholder endpoints/deployment names, set `Import__Enabled` to
-`"true"`, sign in with `az login`, and ensure import storage is provisioned.
-The scripts do not provision Azure resources, grant permissions or install
-dependencies. Use separate test storage, not a production catalog. Keep tokens
-and secrets out of this file: authentication uses Azure CLI.
-
-With Poppler's `pdftoppm` on PATH, start the same services plus a polling worker:
+Start everything from the repository root:
 
 ```powershell
-.\scripts\local\start.ps1 -Worker
+.\start.ps1
 ```
 
-Or run the worker separately after an upload/definition approval:
+The script reloads PATH (so a terminal opened before Poppler was installed
+still finds `pdftoppm`), runs `npm ci` when `node_modules` is missing and then
+runs `dotnet run --project .\server\AppHost`. `.\start.ps1 -NoImports` starts
+without imports and without the import worker.
+
+| Resource | What runs |
+| --- | --- |
+| `api` | `server/Api` on a port chosen by Aspire |
+| `web` | `server/Web` on a port chosen by Aspire, forwarding to `api` |
+| `frontend` | `npm run start` (`ng serve`) on `http://127.0.0.1:4200`, proxying `/api` to `web` |
+
+Open `http://127.0.0.1:4200`. The terminal prints the dashboard login URL
+(`https://localhost:17250/login?t=...`). Stop everything with Ctrl+C. Settings
+are read at startup, so restart the AppHost after changing them.
+
+Api and Web run in Development with `Development__AllowAnonymous=true`. That
+switch is honored only in Development and only for loopback connections; it is
+not a deployment setting. Every process, including Aspire's own endpoints,
+listens on loopback only. Do not expose them to the internet. Local inference
+uses `AzureCliCredential`; hosted inference uses managed identity.
+
+Optional AppHost switches go after `--` or in user secrets:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `Examinator:Imports` | `false` | Enable exam imports, the import worker and reconciliation |
+| `Examinator:Frontend` | `true` | Start the Angular dev server |
+| `Examinator:FrontendPort` | `4200` | Port of the Angular dev server |
+
+For example `dotnet run --project .\server\AppHost -- --Examinator:FrontendPort=4300`.
+
+The Angular proxy (`server/dev-proxy.mjs`) reads the gateway address from
+`EXAMINATOR_WEB_URL`, which the AppHost sets, and only accepts an `http://`
+address on `localhost`, `127.0.0.1` or `[::1]`. A plain `npm start` without
+that variable serves the UI with a warning and does not proxy `/api`.
+
+### Imports
+
+Real uploads and Foundry calls use Azure and cost money; there is no offline
+import mode. Use the dedicated test storage account, never a production
+catalog: the AppHost refuses account names that match the production pattern
+(`exam` followed by 13 characters). It does not provision Azure resources or
+grant permissions. Poppler's `pdftoppm` must be on PATH.
 
 ```powershell
-.\scripts\local\worker.ps1          # One dispatch, then exit
-.\scripts\local\worker.ps1 -Watch   # Poll until Ctrl+C; stops on failure
-.\scripts\local\reconcile.ps1       # Restore lost dispatch, once
+dotnet user-secrets set 'Parameters:foundry-import-deployment' '<vision-import-deployment>' --project .\server\AppHost
+dotnet user-secrets set 'Parameters:storage-account' '<test-storage-account>' --project .\server\AppHost
+dotnet user-secrets set 'Examinator:Imports' 'true' --project .\server\AppHost
 ```
 
-The watcher does not automatically retry failed imports. Review the error and
-explicitly retry through the UI when appropriate. Real uploads and Foundry
-calls use Azure and incur costs; no fully offline import mode is provided.
+With imports enabled the AppHost sets `Import__Enabled`, the three storage
+endpoints of that account and `Foundry__ImportDeployment` on the Api, and adds
+two more resources that run the same Api project:
 
-Stop each service with **Ctrl+C in its terminal**, then close that window.
-If startup fails, existing terminals are left open for diagnosis and must be
-stopped the same way. The launcher refuses ports already in use rather than
-stopping unrelated processes. Settings are read at startup; restart the affected
-service after changing them.
+| Resource | What runs |
+| --- | --- |
+| `import-worker` | `--import-worker --poll`: takes queued imports until it is stopped, checking the queue every 5 seconds |
+| `import-reconcile` | `--reconcile`: restores lost dispatch once; start it from the dashboard when needed |
 
-Requirements: .NET 10 SDK, Node/npm for the existing Angular project, Azure CLI
-signed in as an identity with inference access on the Foundry account.
-
-First build the UI and backend:
-
-```powershell
-npm run build
-dotnet build .\server\Examinator.slnx
-```
-
-In one PowerShell terminal:
-
-```powershell
-$env:ASPNETCORE_ENVIRONMENT = 'Development'
-$env:Development__AllowAnonymous = 'true'
-$env:Foundry__Endpoint = 'https://examinator-46954202.cognitiveservices.azure.com/'
-$env:Foundry__Deployment = 'exam-classifier'
-dotnet run --project .\server\Api --no-launch-profile --urls http://127.0.0.1:5182
-```
-
-In another terminal, from the repository root:
-
-```powershell
-$env:ASPNETCORE_ENVIRONMENT = 'Development'
-$env:Development__AllowAnonymous = 'true'
-$env:Gateway__ApiBaseUrl = 'http://127.0.0.1:5182'
-$env:ASPNETCORE_WEBROOT = Join-Path (Get-Location) 'dist\examinator\browser'
-dotnet run --project .\server\Web --no-launch-profile --urls http://127.0.0.1:5181
-```
-
-Open `http://127.0.0.1:5181` and select **AI testen**. Stopping either command
-stops that service. The anonymous switch is honored **only in Development** and
-only accepts loopback connections. It is not a deployment setting.
-Local inference uses `AzureCliCredential`; hosted inference uses managed identity.
-Do not expose a Development process to the internet.
-
-For Angular hot reload, run `npm start` as well. Its development proxy forwards
-`/api` to the gateway on port 5181, so both backend commands must still be
-running. Restart an already-running Angular dev server after changing the proxy
-configuration. Otherwise use the gateway URL above; rebuild Angular and refresh
-that page after frontend changes.
+The worker stops at the first failed import and does not retry it. Review the
+error, retry the import explicitly in the UI when appropriate, and start
+`import-worker` again from the dashboard. To run without a worker, stop the
+resource in the dashboard.
 
 ## Build containers
 
@@ -485,3 +476,7 @@ npm test -- src\app\services\ai-test-client.spec.ts
 Tests cover gateway allowlisting and CSRF, signed API token validation, allowed
 gateway role/identity, rate limiting, invalid input, explicit provider failures,
 and the Foundry HTTP contract without spending model tokens.
+
+`server/AppHost.Tests` starts the real Api and Web processes through the
+AppHost, without the frontend, imports or Azure, and checks both health
+endpoints and the gateway-to-Api route. It runs in CI only.
