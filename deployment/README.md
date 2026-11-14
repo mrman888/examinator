@@ -235,6 +235,12 @@ Foundry processing, import approval or EasyAuth credential validity.
   system logs to the workspace. The API, web app and both import jobs receive
   `APPLICATIONINSIGHTS_CONNECTION_STRING` and export OpenTelemetry logs, traces
   and metrics through Azure Monitor; without that variable no telemetry is sent.
+- With imports enabled, `ensure-import-capacity.ps1` raises the import model
+  deployment to at least `-ImportDeploymentCapacity` units (default 150, i.e.
+  150K tokens/minute) after checking quota. It patches only the SKU capacity and
+  never lowers it. A single inventory request with all page images exceeds the
+  10K tokens/minute of a 10-unit deployment, which Foundry always rejects with
+  HTTP 429.
 - One Container Apps **Consumption** environment. The API has internal-only
   ingress. The web app has external HTTPS ingress and Container Apps built-in
   Entra authentication (EasyAuth). On first deployment, the web app remains

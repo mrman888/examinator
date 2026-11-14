@@ -128,6 +128,87 @@ public sealed class ImportClassifierTests
         await Assert.ThrowsAsync<InvalidDataException>(() => Model(http).ClassifyAsync(Question, Topics, Blocks, [], default));
     }
 
+    [Fact]
+    public async Task RetriesThrottledRequestsAfterRetryAfterDelay()
+    {
+        var result = new ClassificationResult("biology", "q1", 1,
+            [new("biology-cells", "Celstructuur is nodig.", ["exam-block-1"])], false, []);
+        var handler = new SequenceHandler(
+            Throttled(TimeSpan.FromSeconds(7)), Throttled(null), Ok(Response(result)));
+        using var http = new HttpClient(handler);
+        var delays = new List<TimeSpan>();
+        var model = new ImportModel(http, new Credential(), Configuration())
+        {
+            Delay = (delay, _) => { delays.Add(delay); return Task.CompletedTask; }
+        };
+        var classified = await model.ClassifyAsync(Question, Topics, Blocks, [], default);
+        Assert.Single(classified.Topics);
+        Assert.Equal(3, handler.Requests);
+        Assert.Equal([TimeSpan.FromSeconds(7), ImportModel.DefaultRetryDelay], delays);
+    }
+
+    [Fact]
+    public async Task ReportsPersistentThrottlingAsCapacityProblem()
+    {
+        var handler = new SequenceHandler(Enumerable.Range(0, ImportModel.MaximumRateLimitRetries + 1)
+            .Select(_ => Throttled(TimeSpan.FromMinutes(10))).ToArray());
+        using var http = new HttpClient(handler);
+        var delays = new List<TimeSpan>();
+        var model = new ImportModel(http, new Credential(), Configuration())
+        {
+            Delay = (delay, _) => { delays.Add(delay); return Task.CompletedTask; }
+        };
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            model.ClassifyAsync(Question, Topics, Blocks, [], default));
+        Assert.Contains("HTTP 429", exception.Message);
+        Assert.Contains("capaciteit", exception.Message);
+        Assert.Equal(ImportModel.MaximumRateLimitRetries + 1, handler.Requests);
+        Assert.All(delays, delay => Assert.Equal(ImportModel.MaximumRetryDelay, delay));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task ReportsOtherProviderFailuresWithoutRetrying(HttpStatusCode status)
+    {
+        var handler = new SequenceHandler(new HttpResponseMessage(status), Ok("{}"));
+        using var http = new HttpClient(handler);
+        var model = new ImportModel(http, new Credential(), Configuration())
+        {
+            Delay = (_, _) => throw new InvalidOperationException("No retry expected.")
+        };
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            model.ClassifyAsync(Question, Topics, Blocks, [], default));
+        Assert.Contains($"HTTP {(int)status}", exception.Message);
+        Assert.Equal(1, handler.Requests);
+    }
+
+    private static HttpResponseMessage Throttled(TimeSpan? retryAfter)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        if (retryAfter is { } delay) response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(delay);
+        return response;
+    }
+
+    private static HttpResponseMessage Ok(string body) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(body, Encoding.UTF8, "application/json")
+    };
+
+    private sealed class SequenceHandler(params HttpResponseMessage[] responses) : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(responses[Requests++]);
+    }
+
+    private static IConfiguration Configuration() => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Foundry:Endpoint"] = "https://example.cognitiveservices.azure.com/",
+        ["Foundry:ImportDeployment"] = "approved-import-model"
+    }).Build();
+
     private static ImportModel Model(HttpClient http) => new(http, new Credential(),
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {

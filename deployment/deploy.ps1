@@ -16,6 +16,8 @@ param(
     [string] $FoundryDeploymentName = 'exam-classifier',
     [switch] $EnableImports,
     [string] $ImportDeploymentName,
+    [ValidateRange(1, 1000)]
+    [int] $ImportDeploymentCapacity = 150,
     [switch] $SkipBuild,
     [switch] $ProvisionFoundry,
     [switch] $Deploy
@@ -152,6 +154,12 @@ else {
         -ResourceGroupName $ResourceGroupName -Location $Location `
         -AccountName $FoundryAccountName `
         -PrincipalId ([guid]$base.apiIdentityPrincipalId.value)
+}
+
+if ($EnableImports) {
+    & (Join-Path $PSScriptRoot 'ensure-import-capacity.ps1') -SubscriptionId $SubscriptionId `
+        -ResourceGroupName $ResourceGroupName -AccountName $FoundryAccountName `
+        -DeploymentName $ImportDeploymentName -MinimumCapacity $ImportDeploymentCapacity -Confirm:$false
 }
 
 if (-not $SkipBuild) {

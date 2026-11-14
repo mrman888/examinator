@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -18,6 +19,10 @@ public interface IImportModel
 public sealed class ImportModel(HttpClient client, TokenCredential credential, IConfiguration configuration) : IImportModel
 {
     public const string PromptVersion = "subject-import-v1";
+    internal const int MaximumRateLimitRetries = 3;
+    internal static readonly TimeSpan DefaultRetryDelay = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(60);
+    internal Func<TimeSpan, CancellationToken, Task> Delay { get; init; } = Task.Delay;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
@@ -157,21 +162,56 @@ public sealed class ImportModel(HttpClient client, TokenCredential credential, I
             parts.Add(new { type = "text", text = $"Document: {image.Role}; fysieke PDF-pagina: {image.Page}." });
             parts.Add(new { type = "image_url", image_url = new { url = image.DataUrl, detail = "high" } });
         }
-        var token = await credential.GetTokenAsync(new TokenRequestContext(
-            ["https://cognitiveservices.azure.com/.default"]), cancellationToken);
-        using var request = new HttpRequestMessage(HttpMethod.Post,
-            new Uri(endpoint.AbsoluteUri.TrimEnd('/') + "/openai/v1/chat/completions"));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
-        request.Content = JsonContent.Create(new
+        var payload = new
         {
             model = configuration["Foundry:ImportDeployment"],
             messages = new object[] { new { role = "system", content = instructions },
                 new { role = "user", content = parts } },
             max_completion_tokens = outputTokens,
             response_format = new { type = "json_schema", json_schema = new { name, strict = true, schema } }
-        });
-        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        };
+        var uri = new Uri(endpoint.AbsoluteUri.TrimEnd('/') + "/openai/v1/chat/completions");
+        for (var attempt = 0; ; attempt++)
+        {
+            var token = await credential.GetTokenAsync(new TokenRequestContext(
+                ["https://cognitiveservices.azure.com/.default"]), cancellationToken);
+            using var request = new HttpRequestMessage(HttpMethod.Post, uri);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+            request.Content = JsonContent.Create(payload);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests && attempt < MaximumRateLimitRetries)
+            {
+                // Throttled requests are rejected before inference and are not billed, so waiting is not a paid retry.
+                await Delay(RetryDelay(response), cancellationToken);
+                continue;
+            }
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                throw new InvalidDataException(
+                    "Foundry weigerde de importaanvraag wegens de tokens-per-minuutlimiet van de importdeployment (HTTP 429). " +
+                    "Verhoog de capaciteit van de deployment en kies daarna bewust opnieuw verwerken.");
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidDataException(
+                    $"Foundry gaf HTTP {(int)response.StatusCode} terug voor de importaanvraag. Controleer de importdeployment en -configuratie.");
+            return await ReadResultAsync<T>(response, cancellationToken);
+        }
+    }
+
+    private static TimeSpan RetryDelay(HttpResponseMessage response)
+    {
+        var delay = response.Headers.RetryAfter switch
+        {
+            { Delta: { } delta } => delta,
+            { Date: { } date } => date - DateTimeOffset.UtcNow,
+            _ => DefaultRetryDelay
+        };
+        if (response.Headers.TryGetValues("retry-after-ms", out var values) &&
+            double.TryParse(values.FirstOrDefault(), System.Globalization.CultureInfo.InvariantCulture, out var milliseconds))
+            delay = TimeSpan.FromMilliseconds(milliseconds);
+        return delay < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : delay > MaximumRetryDelay ? MaximumRetryDelay : delay;
+    }
+
+    private static async Task<T> ReadResultAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
         await response.Content.LoadIntoBufferAsync(1024 * 1024, cancellationToken);
         using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken),
             cancellationToken: cancellationToken);

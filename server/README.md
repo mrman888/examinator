@@ -46,6 +46,12 @@ Record updates use Blob ETags; stale changes return 409. Queue visibility and a
 separate worker lease are renewed. A scheduled reconciler restores lost dispatch.
 Paid calls are checkpointed before sending: an interrupted call requires explicit
 retry, keeps the spent call count, and never triggers an automatic paid retry.
+Throttled requests (HTTP 429) are rejected before inference and are not billed:
+the model client waits for `Retry-After` (at most 60 seconds) up to three times,
+then fails the import with an explicit capacity error. Other provider HTTP
+errors fail immediately with their status code. One inventory request carries
+every rendered page image, so the import deployment needs far more than 10K
+tokens per minute; `deployment/deploy.ps1` raises it to at least 150 units.
 Worker starts also have a durable ten-attempt ceiling, so new dispatch hints
 cannot reset crash/poison protection. Explicit retry resets that start counter
 but not the reserved model-call budget. Successful question checkpoints are reused after restart. Model/prompt changes
